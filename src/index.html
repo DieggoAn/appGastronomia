@@ -4,526 +4,117 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Layout Tauri - Resumen Excel</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
-        }
-
-        body {
-            background: linear-gradient(145deg, #fef5f5 0%, #ffffff 100%);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            color: #2d2d2d;
-        }
-
-        /* ===== BANNER SUPERIOR ===== */
-        .top-banner {
-            background: linear-gradient(90deg, #b30000 0%, #d32f2f 50%, #b30000 100%);
-            color: white;
-            padding: 0.75rem 1.5rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 1rem;
-            border-bottom: 3px solid #8b0000;
-            box-shadow: 0 2px 8px rgba(179, 0, 0, 0.2);
-        }
-
-        .banner-sample-text {
-            font-weight: 500;
-            font-size: 0.95rem;
-            letter-spacing: 0.3px;
-            background: rgba(255, 255, 255, 0.15);
-            padding: 0.3rem 1rem;
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-        }
-
-        .banner-buttons {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-
-        .banner-buttons .btn-nav {
-            background: rgba(255, 255, 255, 0.12);
-            border: 1px solid rgba(255, 255, 255, 0.35);
-            color: white;
-            padding: 0.4rem 1rem;
-            border-radius: 6px;
-            font-size: 0.85rem;
-            font-weight: 500;
-            cursor: default;
-            transition: all 0.15s ease;
-            white-space: nowrap;
-        }
-
-        .banner-buttons .btn-nav:hover {
-            background: rgba(255, 255, 255, 0.25);
-            border-color: white;
-        }
-
-        /* ===== CONTENEDOR PRINCIPAL ===== */
-        .app-container {
-            display: flex;
-            flex: 1;
-            overflow: hidden;
-            gap: 1px;
-            background: #e0c0c0;
-        }
-
-        /* ===== BARRA LATERAL IZQUIERDA ===== */
-        .sidebar-left {
-            width: 240px;
-            background: linear-gradient(180deg, #fff5f5 0%, #ffffff 100%);
-            border-right: 2px solid #d4a0a0;
-            padding: 1rem;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            overflow-y: auto;
-        }
-
-        .sidebar-left details {
-            background: white;
-            border: 1px solid #e0b0b0;
-            border-radius: 8px;
-            box-shadow: 0 1px 4px rgba(179, 0, 0, 0.08);
-            overflow: hidden;
-        }
-
-        .sidebar-left summary {
-            padding: 0.75rem 1rem;
-            font-weight: 600;
-            font-size: 0.9rem;
-            color: #b30000;
-            cursor: pointer;
-            background: linear-gradient(90deg, #fff0f0, #ffffff);
-            border-bottom: 1px solid #e0b0b0;
-            list-style: none;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .sidebar-left summary::before {
-            content: "📁";
-            font-size: 1rem;
-        }
-
-        .sidebar-left summary::-webkit-details-marker {
-            display: none;
-        }
-
-        .file-list {
-            list-style: none;
-            padding: 0.5rem;
-        }
-
-        .file-list li {
-            padding: 0.4rem 0.6rem;
-            font-size: 0.85rem;
-            color: #444;
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            border-bottom: 1px solid #f5e0e0;
-            cursor: default;
-        }
-
-        .file-list li:last-child {
-            border-bottom: none;
-        }
-
-        .file-list li .file-icon {
-            font-size: 0.9rem;
-        }
-
-        .file-list li .file-icon.xsl::before {
-            content: "📄";
-        }
-
-        .file-list li .file-icon.xlsx::before {
-            content: "📊";
-        }
-
-        .btn-add-file {
-            background: white;
-            border: 2px dashed #d32f2f;
-            color: #b30000;
-            padding: 0.6rem;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.85rem;
-            cursor: default;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.4rem;
-            transition: all 0.15s ease;
-        }
-
-        .btn-add-file:hover {
-            background: #fff0f0;
-            border-color: #b30000;
-        }
-
-        /* ===== ÁREA CENTRAL ===== */
-        .main-center {
-            flex: 1;
-            background: #ffffff;
-            padding: 1.5rem;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-        }
-
-        .table-container {
-            background: white;
-            border-radius: 12px;
-            border: 1px solid #e0b0b0;
-            box-shadow: 0 2px 12px rgba(179, 0, 0, 0.1);
-            overflow: hidden;
-        }
-
-        .table-header {
-            background: linear-gradient(90deg, #b30000, #d32f2f);
-            color: white;
-            padding: 0.9rem 1.2rem;
-            font-weight: 600;
-            font-size: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .table-header::before {
-            content: "📋";
-        }
-
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.85rem;
-        }
-
-        .data-table th {
-            background: #fef0f0;
-            color: #b30000;
-            font-weight: 600;
-            text-align: left;
-            padding: 0.75rem 1rem;
-            border-bottom: 2px solid #d4a0a0;
-            font-size: 0.8rem;
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-        }
-
-        .data-table td {
-            padding: 0.7rem 1rem;
-            border-bottom: 1px solid #f0dada;
-            color: #333;
-        }
-
-        .data-table tbody tr:hover {
-            background-color: #fff8f8;
-        }
-
-        .data-table tbody tr:last-child td {
-            border-bottom: none;
-        }
-
-        /* ===== BARRA LATERAL DERECHA ===== */
-        .sidebar-right {
-            width: 280px;
-            background: linear-gradient(180deg, #fff5f5 0%, #ffffff 100%);
-            border-left: 2px solid #d4a0a0;
-            padding: 1rem;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            overflow-y: auto;
-        }
-
-        .section-box {
-            background: white;
-            border: 1px solid #e0b0b0;
-            border-radius: 8px;
-            box-shadow: 0 1px 4px rgba(179, 0, 0, 0.08);
-            overflow: hidden;
-        }
-
-        .section-box-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0.6rem 0.8rem;
-            background: linear-gradient(90deg, #fff0f0, #ffffff);
-            border-bottom: 1px solid #e0b0b0;
-        }
-
-        .section-box-header span {
-            font-weight: 600;
-            font-size: 0.85rem;
-            color: #b30000;
-        }
-
-        .btn-add-section {
-            background: #d32f2f;
-            color: white;
-            border: none;
-            padding: 0.25rem 0.6rem;
-            border-radius: 4px;
-            font-size: 0.7rem;
-            font-weight: 600;
-            cursor: default;
-            transition: background 0.15s ease;
-        }
-
-        .btn-add-section:hover {
-            background: #b30000;
-        }
-
-        .section-list {
-            list-style: none;
-            padding: 0.4rem;
-        }
-
-        .section-list li {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0.5rem 0.6rem;
-            font-size: 0.85rem;
-            border-bottom: 1px solid #f5e0e0;
-            gap: 0.5rem;
-        }
-
-        .section-list li:last-child {
-            border-bottom: none;
-        }
-
-        .section-name {
-            flex: 1;
-            font-weight: 500;
-            color: #333;
-        }
-
-        .section-size {
-            font-size: 0.75rem;
-            color: #b30000;
-            background: #fff0f0;
-            padding: 0.15rem 0.5rem;
-            border-radius: 10px;
-            font-weight: 600;
-            min-width: 32px;
-            text-align: center;
-        }
-
-        .btn-delete-section {
-            background: transparent;
-            border: none;
-            color: #999;
-            font-size: 1rem;
-            font-weight: bold;
-            cursor: default;
-            padding: 0 0.2rem;
-            line-height: 1;
-            transition: color 0.15s ease;
-        }
-
-        .btn-delete-section:hover {
-            color: #d32f2f;
-        }
-
-        .export-buttons {
-            display: flex;
-            flex-direction: column;
-            gap: 0.6rem;
-            margin-top: 0.5rem;
-        }
-
-        .export-buttons .btn-export {
-            background: white;
-            border: 2px solid #d32f2f;
-            color: #b30000;
-            padding: 0.7rem;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.85rem;
-            cursor: default;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.5rem;
-            transition: all 0.15s ease;
-        }
-
-        .export-buttons .btn-export:hover {
-            background: #fff0f0;
-            border-color: #b30000;
-        }
-
-        /* Scrollbars sutiles */
-        ::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: #f5e0e0;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: #d4a0a0;
-            border-radius: 3px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: #b30000;
-        }
-    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-    <!-- BANNER SUPERIOR -->
     <header class="top-banner">
-        <div class="banner-sample-text">📌 Sample Text — Layout Tauri v0.1</div>
+        <div class="banner-brand">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 7h18M3 12h18M3 17h18"/>
+            </svg>
+            <span>Resumen Excel</span>
+            <span class="banner-version">v0.1</span>
+        </div>
         <nav class="banner-buttons">
-            <button class="btn-nav" type="button">Estructura</button>
-            <button class="btn-nav" type="button">SQL</button>
-            <button class="btn-nav" type="button">Buscar</button>
-            <button class="btn-nav" type="button">Exportar</button>
-            <button class="btn-nav" type="button">Importar</button>
-            <button class="btn-nav" type="button">Operaciones</button>
+            <button class="btn-nav" type="button" data-action="estructura">Estructura</button>
+            <button class="btn-nav" type="button" data-action="sql">SQL</button>
+            <button class="btn-nav" type="button" data-action="buscar">Buscar</button>
+            <button class="btn-nav" type="button" data-action="exportar">Exportar</button>
+            <button class="btn-nav" type="button" data-action="importar">Importar</button>
+            <button class="btn-nav" type="button" data-action="operaciones">Operaciones</button>
         </nav>
     </header>
 
-    <!-- CONTENEDOR DE TRES COLUMNAS -->
     <div class="app-container">
-
-        <!-- BARRA LATERAL IZQUIERDA -->
         <aside class="sidebar-left">
             <details open>
-                <summary>Archivos</summary>
-                <ul class="file-list">
-                    <li><span class="file-icon xsl"></span> datos_ventas.xsl</li>
-                    <li><span class="file-icon xlsx"></span> resumen_2024.xlsx</li>
-                    <li><span class="file-icon xsl"></span> plantilla_base.xsl</li>
-                    <li><span class="file-icon xlsx"></span> inventario_q1.xlsx</li>
-                    <li><span class="file-icon xsl"></span> config_export.xsl</li>
-                    <li><span class="file-icon xlsx"></span> clientes_activos.xlsx</li>
+                <summary>
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+                    Archivos
+                </summary>
+                <ul class="file-list" id="fileList">
+                    <!-- Los archivos se cargan dinámicamente desde main.js -->
                 </ul>
             </details>
-            <button class="btn-add-file" type="button">➕ Agregar archivo</button>
+            <button class="btn-add-file" type="button" id="btnAddFile">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Agregar archivo
+            </button>
+            <div class="export-buttons">
+                <button class="btn-export" type="button" id="btnExportExcel">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg> Exportar como Excel
+                </button>
+                <button class="btn-export" type="button" id="btnExportPdf">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/><path d="M14 2v6h6"/></svg> Exportar como PDF
+                </button>
+            </div>
         </aside>
 
-        <!-- ÁREA CENTRAL (TABLA) -->
         <main class="main-center">
             <div class="table-container">
-                <div class="table-header">Resumen de datos — Archivos Excel seleccionados</div>
+                <div class="table-header">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg> Resumen de datos — Archivos Excel seleccionados
+                </div>
                 <table class="data-table">
                     <thead>
-                        <tr>
-                            <th>Archivo</th>
-                            <th>Hoja</th>
-                            <th>Filas</th>
-                            <th>Columnas</th>
-                            <th>Última modificación</th>
-                        </tr>
+                        <tr><th>Archivo</th><th>Hoja</th><th>Filas</th><th>Columnas</th><th>Última modificación</th></tr>
                     </thead>
-                    <tbody>
-                        <tr>
-                            <td>resumen_2024.xlsx</td>
-                            <td>Ventas</td>
-                            <td>1,245</td>
-                            <td>12</td>
-                            <td>2026-10-15 14:30</td>
-                        </tr>
-                        <tr>
-                            <td>inventario_q1.xlsx</td>
-                            <td>Stock</td>
-                            <td>890</td>
-                            <td>8</td>
-                            <td>2026-10-18 09:15</td>
-                        </tr>
-                        <tr>
-                            <td>clientes_activos.xlsx</td>
-                            <td>Directorio</td>
-                            <td>2,310</td>
-                            <td>15</td>
-                            <td>2026-10-20 17:45</td>
-                        </tr>
-                        <tr>
-                            <td>datos_ventas.xsl</td>
-                            <td>Transformación</td>
-                            <td>—</td>
-                            <td>—</td>
-                            <td>2026-10-19 11:20</td>
-                        </tr>
-                        <tr>
-                            <td>plantilla_base.xsl</td>
-                            <td>Layout</td>
-                            <td>—</td>
-                            <td>—</td>
-                            <td>2026-10-12 08:00</td>
-                        </tr>
+                    <tbody id="summaryTableBody">
+                        <!-- Filas generadas dinámicamente -->
                     </tbody>
                 </table>
             </div>
         </main>
 
-        <!-- BARRA LATERAL DERECHA -->
         <aside class="sidebar-right">
-            <!-- Cuadro de secciones -->
+            <!-- Cuadro 1: Agrupación de secciones -->
             <div class="section-box">
                 <div class="section-box-header">
-                    <span>Secciones</span>
-                    <button class="btn-add-section" type="button">➕ Agregar sección</button>
+                    <input class="group-title-input" type="text" placeholder="Nombre de grupo" value="Secciones" id="groupTitle">
                 </div>
-                <ul class="section-list">
-                    <li>
-                        <span class="section-name">Sección 1</span>
-                        <span class="section-size">45</span>
-                        <button class="btn-delete-section" type="button" title="Borrar sección">✕</button>
-                    </li>
-                    <li>
-                        <span class="section-name">Sección 2</span>
-                        <span class="section-size">72</span>
-                        <button class="btn-delete-section" type="button" title="Borrar sección">✕</button>
-                    </li>
-                    <li>
-                        <span class="section-name">Sección 3</span>
-                        <span class="section-size">18</span>
-                        <button class="btn-delete-section" type="button" title="Borrar sección">✕</button>
-                    </li>
-                    <li>
-                        <span class="section-name">Sección 4</span>
-                        <span class="section-size">90</span>
-                        <button class="btn-delete-section" type="button" title="Borrar sección">✕</button>
-                    </li>
-                    <li>
-                        <span class="section-name">Sección 5</span>
-                        <span class="section-size">33</span>
-                        <button class="btn-delete-section" type="button" title="Borrar sección">✕</button>
-                    </li>
+
+                <div class="section-list-header">
+                    <span class="col-name">Nombre sección</span>
+                    <span class="col-alumnos">Alumnos</span>
+                    <span class="col-proporcion">Proporción</span>
+                    <span class="col-delete"></span>
+                </div>
+
+                <ul class="section-list" id="sectionList">
+                    <!-- Secciones generadas dinámicamente -->
+                </ul>
+
+                <div class="section-box-footer">
+                    <button class="btn-group-auto" type="button" id="btnAdjust" title="Calcular proporciones automáticamente">
+                        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        Ajuste
+                    </button>
+                    <button class="btn-group-save" type="button" id="btnSaveGroup">
+                        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+                        Guardar
+                    </button>
+                    <button class="btn-add-section" type="button" id="btnAddSection" title="Agregar sección">
+                        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                        Agregar
+                    </button>
+                </div>
+            </div>
+
+            <!-- Cuadro 2: Secciones guardadas -->
+            <div class="saved-sections-box">
+                <div class="section-box-header">
+                    <span>Secciones guardadas</span>
+                </div>
+                <ul class="saved-list" id="savedList">
+                    <!-- Grupos guardados generados dinámicamente -->
                 </ul>
             </div>
-
-            <!-- Botones de exportación -->
-            <div class="export-buttons">
-                <button class="btn-export" type="button">📥 Exportar como Excel</button>
-                <button class="btn-export" type="button">📄 Exportar como PDF</button>
-            </div>
         </aside>
-
     </div>
 
+    <script type="module" src="main.js"></script>
 </body>
 </html>
