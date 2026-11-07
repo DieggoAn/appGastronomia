@@ -12,12 +12,15 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // 2. Inicializamos el estado global para manejar las secciones
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(secciones::AppState::default()) 
         .invoke_handler(tauri::generate_handler![
             greet, 
             // 3. Registramos el nuevo comando de Rust
-            secciones::agregar_seccion 
+            secciones::agregar_seccion,
+            secciones::guardar_grupo,
+            secciones::obtener_grupos_guardados,
+            secciones::eliminar_grupo
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

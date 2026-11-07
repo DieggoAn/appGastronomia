@@ -72,8 +72,11 @@
         <aside class="sidebar-right">
             <!-- Cuadro 1: Agrupación de secciones -->
             <div class="section-box">
-                <div class="section-box-header">
-                    <input class="group-title-input" type="text" placeholder="Nombre de grupo" value="Secciones" id="groupTitle">
+                <div class="section-box-header" style="display: flex; gap: 8px; align-items: center;">
+                    <input class="group-title-input" type="text" placeholder="Nombre de grupo" value="Nuevo Grupo" id="groupTitle">
+                    <button class="btn-nav" id="btnNewGroup" title="Crear nuevo grupo" style="padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); cursor: pointer; color: var(--text-muted); font-size: 11px;">
+                        + Nuevo
+                    </button>
                 </div>
 
                 <div class="section-list-header">

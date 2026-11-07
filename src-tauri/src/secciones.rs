@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
+use serde_json::json; // Para construir el Value
 use std::sync::Mutex;
+use tauri_plugin_store::StoreExt; // <-- Importante
 
-// 1. Definimos cómo se ve una sección
+// 1. Definimos cómo se ve una sección (sin cambios)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Seccion {
     pub id: u32,
@@ -10,8 +12,7 @@ pub struct Seccion {
     pub proporcion: f32,
 }
 
-// 2. Definimos el estado que Tauri va a recordar
-// Usamos Mutex para evitar problemas de concurrencia si haces varias llamadas rápido
+// 2. Estado global (sin cambios)
 pub struct AppState {
     pub secciones: Mutex<Vec<Seccion>>,
     pub contador_id: Mutex<u32>,
@@ -21,31 +22,97 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             secciones: Mutex::new(Vec::new()),
-            contador_id: Mutex::new(1), // Empezamos en 1
+            contador_id: Mutex::new(1),
         }
     }
 }
 
-// 3. El comando que se llamará desde JS
+// 3. Comando existente (sin cambios)
 #[tauri::command]
 pub fn agregar_seccion(state: tauri::State<'_, AppState>) -> Result<Vec<Seccion>, String> {
     let mut id_lock = state.contador_id.lock().map_err(|_| "Error al bloquear ID")?;
     let mut secciones_lock = state.secciones.lock().map_err(|_| "Error al bloquear secciones")?;
 
-    // Creamos la nueva sección con valores por defecto
     let nueva_seccion = Seccion {
         id: *id_lock,
-        nombre: format!("Sección {}", *id_lock),
+        nombre: "Nueva Sección".to_string(),
         alumnos: 0,
         proporcion: 0.0,
     };
 
-    // La agregamos a la lista
     secciones_lock.push(nueva_seccion);
-    
-    // Incrementamos el ID para la próxima vez
     *id_lock += 1;
 
-    // Retornamos la lista completa actualizada para que JS la dibuje
     Ok(secciones_lock.clone())
+}
+
+// 4. NUEVO COMANDO: Guardar grupo en JSON
+#[tauri::command]
+pub fn guardar_grupo(
+    app: tauri::AppHandle, // Inyectamos AppHandle para acceder al Store
+    nombre_grupo: String,
+    secciones: Vec<Seccion>,
+) -> Result<(), String> {
+    // Obtenemos (o creamos) el store apuntando al archivo JSON
+    let store = app.store("grupos.json").map_err(|e| e.to_string())?;
+
+    // Construimos un objeto JSON con los datos del grupo
+    // El plugin espera serde_json::Value, así que usamos json!()
+    let grupo_json = json!({
+        "nombre": nombre_grupo,
+        "secciones": secciones,
+    });
+
+    // Guardamos bajo una clave única (podrías usar un ID de grupo o un timestamp)
+    let clave = format!("grupo_{}", nombre_grupo); // Simplificado por ahora
+    store.set(clave, grupo_json);
+
+    // Persistimos a disco
+    // (Si usas autoSave en JS no es estrictamente necesario, pero es buena práctica)
+    store.save().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// Añade esto al final de tu secciones.rs
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GrupoGuardado {
+    pub nombre: String,
+    pub secciones: Vec<Seccion>,
+    // Si luego quieres más datos, se añaden aquí
+}
+
+#[tauri::command]
+pub fn obtener_grupos_guardados(app: tauri::AppHandle) -> Result<Vec<GrupoGuardado>, String> {
+    // 1. Obtenemos el store
+    let store = app.store("grupos.json").map_err(|e| e.to_string())?;
+    
+    let mut grupos = Vec::new();
+
+    // 2. Iteramos sobre todas las claves del store
+    for (_, value) in store.entries() {
+        // Intentamos deserializar cada valor al struct GrupoGuardado
+        if let Ok(grupo) = serde_json::from_value::<GrupoGuardado>(value) {
+            grupos.push(grupo);
+        }
+    }
+
+    Ok(grupos)
+}
+
+#[tauri::command]
+pub fn eliminar_grupo(app: tauri::AppHandle, nombre_grupo: String) -> Result<(), String> {
+    let store = app.store("grupos.json").map_err(|e| e.to_string())?;
+    
+    // El plugin usa el nombre del grupo como clave en el JSON (ej. "grupo_Nombre")
+    let clave = format!("grupo_{}", nombre_grupo);
+    
+    // Eliminamos la clave del store
+    store.delete(clave);
+    
+    // Guardamos los cambios en disco
+    store.save().map_err(|e| e.to_string())?;
+    
+    Ok(())
 }

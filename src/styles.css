@@ -485,3 +485,51 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #d5d0d0; border-radius: 5px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-thumb:hover { background: #b8b0b0; }
+
+/* Añade esto al final de tu styles.css */
+.btn-use-group {
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.12s ease;
+    white-space: nowrap;
+}
+
+.btn-use-group:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+/* Añade esto en styles.css */
+.section-box-header {
+    /* Asegúrate de que permita flexbox para alinear el input y el botón */
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.btn-new-group {
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
+    border-radius: var(--radius-sm);
+    padding: 5px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.12s ease;
+}
+
+.btn-new-group:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
