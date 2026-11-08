@@ -30,8 +30,14 @@ impl Default for AppState {
 // 3. Comando existente (sin cambios)
 #[tauri::command]
 pub fn agregar_seccion(state: tauri::State<'_, AppState>) -> Result<Vec<Seccion>, String> {
-    let mut id_lock = state.contador_id.lock().map_err(|_| "Error al bloquear ID")?;
-    let mut secciones_lock = state.secciones.lock().map_err(|_| "Error al bloquear secciones")?;
+    let mut id_lock = state
+        .contador_id
+        .lock()
+        .map_err(|_| "Error al bloquear ID")?;
+    let mut secciones_lock = state
+        .secciones
+        .lock()
+        .map_err(|_| "Error al bloquear secciones")?;
 
     let nueva_seccion = Seccion {
         id: *id_lock,
@@ -87,7 +93,7 @@ pub struct GrupoGuardado {
 pub fn obtener_grupos_guardados(app: tauri::AppHandle) -> Result<Vec<GrupoGuardado>, String> {
     // 1. Obtenemos el store
     let store = app.store("grupos.json").map_err(|e| e.to_string())?;
-    
+
     let mut grupos = Vec::new();
 
     // 2. Iteramos sobre todas las claves del store
@@ -104,16 +110,16 @@ pub fn obtener_grupos_guardados(app: tauri::AppHandle) -> Result<Vec<GrupoGuarda
 #[tauri::command]
 pub fn eliminar_grupo(app: tauri::AppHandle, nombre_grupo: String) -> Result<(), String> {
     let store = app.store("grupos.json").map_err(|e| e.to_string())?;
-    
+
     // El plugin usa el nombre del grupo como clave en el JSON (ej. "grupo_Nombre")
     let clave = format!("grupo_{}", nombre_grupo);
-    
+
     // Eliminamos la clave del store
     store.delete(clave);
-    
+
     // Guardamos los cambios en disco
     store.save().map_err(|e| e.to_string())?;
-    
+
     Ok(())
 }
 
@@ -134,7 +140,7 @@ pub fn auto_ajustar_proporciones(mut secciones: Vec<Seccion>) -> Result<Vec<Secc
     for seccion in secciones.iter_mut() {
         // Regla de tres: (alumnos / max_alumnos) * 100
         let proporcion_calculada = (seccion.alumnos as f32 / max_alumnos as f32) * 100.0;
-        
+
         // Redondeamos a 1 decimal para que se vea limpio en la UI (ej. 50.0, 33.3)
         seccion.proporcion = (proporcion_calculada * 10.0).round() / 10.0;
     }
