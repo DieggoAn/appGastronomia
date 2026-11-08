@@ -9,6 +9,25 @@ window.addEventListener('DOMContentLoaded', () => {
     const sectionList = document.getElementById('sectionList');
     const btnSaveGroup = document.getElementById('btnSaveGroup');
     const btnNewGroup = document.getElementById('btnNewGroup');
+    const btnAdjust = document.getElementById('btnAdjust');
+    
+    if (btnAdjust && sectionList) {
+        btnAdjust.addEventListener('click', async () => {
+            try {
+                // Le pasamos la lista actual de JS a Rust
+                const seccionesAjustadas = await invoke('auto_ajustar_proporciones', {
+                    secciones: seccionesActuales
+                });
+                
+                // Rust nos devuelve la lista con las proporciones calculadas
+                // Volvemos a pintar la tabla
+                renderizarSecciones(seccionesAjustadas, sectionList);
+            } catch (error) {
+                console.error("Error al auto ajustar:", error);
+                alert("Error al calcular las proporciones: " + error);
+            }
+        });
+    }
     
     // 1. Lógica del botón "Nuevo"
     if (btnNewGroup) {

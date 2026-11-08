@@ -20,7 +20,8 @@ pub fn run() {
             secciones::agregar_seccion,
             secciones::guardar_grupo,
             secciones::obtener_grupos_guardados,
-            secciones::eliminar_grupo
+            secciones::eliminar_grupo,
+            secciones::auto_ajustar_proporciones
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

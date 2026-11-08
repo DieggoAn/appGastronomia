@@ -116,3 +116,28 @@ pub fn eliminar_grupo(app: tauri::AppHandle, nombre_grupo: String) -> Result<(),
     
     Ok(())
 }
+
+#[tauri::command]
+pub fn auto_ajustar_proporciones(mut secciones: Vec<Seccion>) -> Result<Vec<Seccion>, String> {
+    // 1. Buscar el valor máximo de alumnos (evitando el 0)
+    let max_alumnos = secciones.iter().map(|s| s.alumnos).max().unwrap_or(0);
+
+    // 2. Si no hay alumnos o todos son 0, evitamos dividir por cero
+    if max_alumnos == 0 {
+        for seccion in secciones.iter_mut() {
+            seccion.proporcion = 0.0;
+        }
+        return Ok(secciones);
+    }
+
+    // 3. Calcular la proporción para cada sección
+    for seccion in secciones.iter_mut() {
+        // Regla de tres: (alumnos / max_alumnos) * 100
+        let proporcion_calculada = (seccion.alumnos as f32 / max_alumnos as f32) * 100.0;
+        
+        // Redondeamos a 1 decimal para que se vea limpio en la UI (ej. 50.0, 33.3)
+        seccion.proporcion = (proporcion_calculada * 10.0).round() / 10.0;
+    }
+
+    Ok(secciones)
+}
