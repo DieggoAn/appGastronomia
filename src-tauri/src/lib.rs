@@ -27,7 +27,9 @@ pub fn run() {
             secciones::auto_ajustar_proporciones,
             recientes::guardar_archivos_recientes,  
             recientes::obtener_archivos_recientes,
-            excel::obtener_hojas_excel    
+            excel::obtener_hojas_excel,
+            excel::procesar_hojas_excel,
+            excel::calcular_total    
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

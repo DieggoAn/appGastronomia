@@ -20,12 +20,8 @@
             <span class="banner-version">v0.1</span>
         </div>
         <nav class="banner-buttons">
-            <button class="btn-nav" type="button" data-action="estructura">Estructura</button>
-            <button class="btn-nav" type="button" data-action="sql">SQL</button>
-            <button class="btn-nav" type="button" data-action="buscar">Buscar</button>
-            <button class="btn-nav" type="button" data-action="exportar">Exportar</button>
-            <button class="btn-nav" type="button" data-action="importar">Importar</button>
-            <button class="btn-nav" type="button" data-action="operaciones">Operaciones</button>
+            <button class="btn-nav" type="button" id="btnProcesarSeleccionadas" title="Procesar hojas seleccionadas">Procesar</button>
+            <button class="btn-nav" type="button" id="btnCalcularTotal" title="Calcular cantidad total por proporción">Total</button>
         </nav>
     </header>
 
@@ -55,16 +51,26 @@
         </aside>
 
         <main class="main-center">
-            <div class="table-container">
+            <div class="table-container" style="margin-top: 16px;">
                 <div class="table-header">
-                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg> Resumen de datos — Archivos Excel seleccionados
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        <path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>
+                    </svg>
+                    Consolidado de ingredientes
                 </div>
                 <table class="data-table">
                     <thead>
-                        <tr><th>Archivo</th><th>Hoja</th><th>Filas</th><th>Columnas</th><th>Última modificación</th></tr>
+                        <tr>
+                            <th>Ingrediente</th>
+                            <th>Unidad</th>
+                            <th>Cantidad</th>
+                            <th>Cantidad Total</th>
+                            <th>Comentarios</th> <!-- Antes era Códigos -->
+                        </tr>
                     </thead>
-                    <tbody id="summaryTableBody">
-                        <!-- Filas generadas dinámicamente -->
+                    <tbody id="tablaConsolidadaBody">
+                        <tr><td colspan="5" style="text-align:center; color:#888;">Haz clic en el nombre de una hoja para procesarla</td></tr>
                     </tbody>
                 </table>
             </div>

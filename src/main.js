@@ -2,6 +2,7 @@ const { invoke } = window.__TAURI__.core;
 
 // Variable global para mantener las secciones actuales en JS
 let seccionesActuales = [];
+let ingredientesConsolidados = []; 
 
 // --- ÚNICO BLOQUE DOMContentLoaded ---
 window.addEventListener('DOMContentLoaded', () => {
@@ -11,6 +12,34 @@ window.addEventListener('DOMContentLoaded', () => {
     const btnNewGroup = document.getElementById('btnNewGroup');
     const btnAdjust = document.getElementById('btnAdjust');
     const btnAddExcel = document.getElementById('btnAddExcel');
+    const btnProcesarSeleccionadas = document.getElementById('btnProcesarSeleccionadas');
+    const btnCalcularTotal = document.getElementById('btnCalcularTotal');
+
+    if (btnCalcularTotal) {
+        btnCalcularTotal.addEventListener('click', async () => {
+            if (ingredientesConsolidados.length === 0) {
+                alert('Primero procesa algunas hojas para obtener ingredientes.');
+                return;
+            }
+
+            if (seccionesActuales.length === 0) {
+                alert('Agrega al menos una sección antes de calcular el total.');
+                return;
+            }
+
+            try {
+                const conTotales = await invoke('calcular_total', {
+                    ingredientes: ingredientesConsolidados,
+                    secciones: seccionesActuales
+                });
+
+                pintarTablaConsolidadaConTotal(conTotales);
+            } catch (error) {
+                console.error('Error al calcular total:', error);
+                alert('Error al calcular total: ' + error);
+            }
+        });
+    }
 
     if (btnAddExcel) {
         btnAddExcel.addEventListener('click', async () => {
@@ -21,10 +50,7 @@ window.addEventListener('DOMContentLoaded', () => {
                 });
 
                 if (selected && selected.length > 0) {
-                    // 1. Enviamos las rutas a Rust para que las guarde en el JSON
                     await invoke('guardar_archivos_recientes', { rutas: selected });
-                    
-                    // 2. Recargamos la lista visual
                     await cargarArchivosRecientes();
                 }
             } catch (error) {
@@ -32,17 +58,61 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-    
+
+    // --- NUEVO: Procesar todas las hojas seleccionadas ---
+    if (btnProcesarSeleccionadas) {
+        btnProcesarSeleccionadas.addEventListener('click', async () => {
+            const hojasMarcadas = document.querySelectorAll('.chk-sheet:checked');
+
+            if (hojasMarcadas.length === 0) {
+                alert('No hay hojas seleccionadas.');
+                return;
+            }
+
+            const tbody = document.getElementById('tablaConsolidadaBody');
+            if (!tbody) return;
+
+            tbody.innerHTML = `<tr><td colspan="4">Procesando...</td></tr>`;
+
+            // Agrupamos las hojas por archivo (ruta)
+            const hojasPorArchivo = {};
+            hojasMarcadas.forEach(chk => {
+                const detalles = chk.closest('details');
+                const ruta = detalles.dataset.ruta;
+                if (!hojasPorArchivo[ruta]) hojasPorArchivo[ruta] = [];
+                hojasPorArchivo[ruta].push(chk.dataset.hoja);
+            });
+
+            let todosLosDatos = [];
+
+            // Procesamos archivo por archivo
+            for (const [ruta, hojas] of Object.entries(hojasPorArchivo)) {
+                try {
+                    const datos = await invoke('procesar_hojas_excel', {
+                        ruta: ruta,
+                        nombresHojas: hojas // Enviamos el array de hojas de este archivo
+                    });
+                    todosLosDatos = todosLosDatos.concat(datos);
+                } catch (error) {
+                    console.error(`Error procesando archivo ${ruta}:`, error);
+                }
+            }
+
+            if (todosLosDatos.length > 0) {
+                ingredientesConsolidados = todosLosDatos;
+                pintarTablaConsolidada(todosLosDatos);
+            } else {
+                tbody.innerHTML = '<tr><td colspan="4">No se obtuvieron datos.</td></tr>';
+            }
+        });
+    }
+
     if (btnAdjust && sectionList) {
         btnAdjust.addEventListener('click', async () => {
             try {
-                // Le pasamos la lista actual de JS a Rust
                 const seccionesAjustadas = await invoke('auto_ajustar_proporciones', {
                     secciones: seccionesActuales
                 });
-                
-                // Rust nos devuelve la lista con las proporciones calculadas
-                // Volvemos a pintar la tabla
                 renderizarSecciones(seccionesAjustadas, sectionList);
             } catch (error) {
                 console.error("Error al auto ajustar:", error);
@@ -50,19 +120,17 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-    
-    // 1. Lógica del botón "Nuevo"
+
     if (btnNewGroup) {
         btnNewGroup.addEventListener('click', () => {
             const inputTitulo = document.getElementById('groupTitle');
             if (inputTitulo) inputTitulo.value = "Nuevo Grupo";
-            seccionesActuales = []; 
+            seccionesActuales = [];
             if (sectionList) renderizarSecciones([], sectionList);
             document.activeElement.blur();
         });
     }
 
-    // 2. Lógica del botón "Agregar Sección"
     if (btnAddSection && sectionList) {
         btnAddSection.addEventListener('click', async () => {
             try {
@@ -74,49 +142,43 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 3. Lógica del botón "Guardar" (CON VALIDACIÓN)
     if (btnSaveGroup) {
         btnSaveGroup.addEventListener('click', async (event) => {
-            event.preventDefault(); 
+            event.preventDefault();
 
             const inputNombre = document.getElementById('groupTitle');
             const nombreGrupo = inputNombre.value.trim();
-            
-            // Validaciones
+
             if (!nombreGrupo) {
                 alert("El nombre del grupo no puede estar vacío.");
-                return; 
+                return;
             }
 
             if (nombreGrupo.toLowerCase() === "nuevo grupo" || nombreGrupo.toLowerCase() === "nombre de grupo") {
                 alert("Por favor, cambia el nombre por defecto antes de guardar.");
-                return; 
+                return;
             }
 
-            // Guardado
             try {
                 await invoke('guardar_grupo', {
                     nombreGrupo: nombreGrupo,
                     secciones: seccionesActuales
                 });
                 alert("Grupo guardado exitosamente.");
-                await cargarGruposGuardados(); 
+                await cargarGruposGuardados();
             } catch (error) {
                 alert("Error al guardar el grupo: " + error);
             }
         });
     }
 
-    // ¡Cargar los grupos al iniciar la app!
     cargarArchivosRecientes();
     cargarGruposGuardados();
-
 });
 
 function renderizarSecciones(secciones, contenedor) {
-    // ... (tu función renderizarSecciones se queda EXACTAMENTE IGUAL) ...
-    seccionesActuales = JSON.parse(JSON.stringify(secciones)); 
-    contenedor.innerHTML = ''; 
+    seccionesActuales = JSON.parse(JSON.stringify(secciones));
+    contenedor.innerHTML = '';
     seccionesActuales.forEach(seccion => {
         const li = document.createElement('li');
         li.innerHTML = `
@@ -147,7 +209,6 @@ function renderizarSecciones(secciones, contenedor) {
 }
 
 async function cargarGruposGuardados() {
-    // ... (tu función cargarGruposGuardados se queda EXACTAMENTE IGUAL) ...
     const savedList = document.getElementById('savedList');
     if (!savedList) return;
 
@@ -171,7 +232,7 @@ async function cargarGruposGuardados() {
             btn.addEventListener('click', (e) => {
                 const button = e.target.closest('.btn-use-group');
                 const index = parseInt(button.dataset.index);
-                usarGrupoGuardado(grupos[index]); 
+                usarGrupoGuardado(grupos[index]);
             });
         });
 
@@ -182,7 +243,7 @@ async function cargarGruposGuardados() {
                 if (confirm(`¿Estás seguro de que quieres eliminar el grupo "${nombre}"?`)) {
                     try {
                         await invoke('eliminar_grupo', { nombreGrupo: nombre });
-                        await cargarGruposGuardados(); 
+                        await cargarGruposGuardados();
                     } catch (error) {
                         alert("Error al eliminar el grupo: " + error);
                     }
@@ -196,7 +257,6 @@ async function cargarGruposGuardados() {
 }
 
 function usarGrupoGuardado(grupo) {
-    // ... (tu función usarGrupoGuardado se queda EXACTAMENTE IGUAL) ...
     const inputTitulo = document.getElementById('groupTitle');
     if (inputTitulo) inputTitulo.value = grupo.nombre;
     const sectionList = document.getElementById('sectionList');
@@ -205,17 +265,17 @@ function usarGrupoGuardado(grupo) {
 }
 
 async function cargarArchivosRecientes() {
-    const fileList = document.getElementById('fileList'); 
+    const fileList = document.getElementById('fileList');
     if (!fileList) return;
 
     try {
         const archivos = await invoke('obtener_archivos_recientes');
-        fileList.innerHTML = ''; 
+        fileList.innerHTML = '';
 
         archivos.forEach(archivo => {
             const detalles = document.createElement('details');
             detalles.className = 'excel-file-details';
-            
+
             const nombreArchivo = archivo.ruta.split(/[\\/]/).pop();
 
             detalles.innerHTML = `
@@ -233,51 +293,49 @@ async function cargarArchivosRecientes() {
                     <li class="loading-text">Cargando hojas...</li>
                 </ul>
             `;
-            
+
             detalles.dataset.ruta = archivo.ruta;
 
             const chkFile = detalles.querySelector('.chk-file');
 
-            // --- EVENTO 1: Seleccionar/Deseleccionar TODAS las hojas ---
             chkFile.addEventListener('change', (e) => {
                 const isChecked = e.target.checked;
                 const chkHojas = detalles.querySelectorAll('.chk-sheet');
                 chkHojas.forEach(chk => {
                     chk.checked = isChecked;
-                    // Aquí a futuro podríamos actualizar el array global de seleccionados
                 });
             });
 
-            // --- EVENTO 2: Abrir el acordeón y cargar las hojas ---
             detalles.addEventListener('toggle', async () => {
                 const ul = detalles.querySelector('.sheets-list');
                 if (detalles.open && ul.children.length === 1 && ul.innerHTML.includes('Cargando')) {
                     try {
                         const hojas = await invoke('obtener_hojas_excel', { ruta: archivo.ruta });
                         ul.innerHTML = '';
-                        
+
                         hojas.forEach(nombreHoja => {
                             const liHoja = document.createElement('li');
                             liHoja.className = 'sheet-item';
-                            
-                            // Añadimos el checkbox a cada hoja
+
                             liHoja.innerHTML = `
-                                <label style="display: flex; align-items: center; gap: 8px; width: 100%; cursor: pointer;">
+                                <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
                                     <input type="checkbox" class="chk-sheet" data-hoja="${nombreHoja}">
-                                    <span>${nombreHoja}</span>
-                                </label>
+                                    <span class="sheet-name" style="cursor: pointer; flex: 1;">${nombreHoja}</span>
+                                </div>
                             `;
 
-                            // --- EVENTO 3: Sincronizar el checkbox del padre ---
                             const chkSheet = liHoja.querySelector('.chk-sheet');
                             chkSheet.addEventListener('change', () => {
                                 const todasLasHojas = Array.from(detalles.querySelectorAll('.chk-sheet'));
                                 const todasMarcadas = todasLasHojas.every(chk => chk.checked);
                                 const algunaMarcada = todasLasHojas.some(chk => chk.checked);
-                                
-                                chkFile.checked = todasMarcadas; // Si todas están marcadas, marca el padre
-                                chkFile.indeterminate = algunaMarcada && !todasMarcadas; // Estado mixto
+
+                                chkFile.checked = todasMarcadas;
+                                chkFile.indeterminate = algunaMarcada && !todasMarcadas;
                             });
+
+                            // Ya NO hay listener de clic en .sheet-name.
+                            // El procesamiento lo dispara el botón #btnProcesarSeleccionadas.
 
                             ul.appendChild(liHoja);
                         });
@@ -292,4 +350,43 @@ async function cargarArchivosRecientes() {
     } catch (error) {
         console.error("Error al cargar archivos recientes:", error);
     }
+}
+
+function pintarTablaConsolidada(datos) {
+    const tbody = document.getElementById('tablaConsolidadaBody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    datos.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><strong>${item.nombre}</strong></td>
+            <td>${item.unidad}</td>
+            <td>${item.cantidad.toFixed(2)}</td>
+            <td style="color:#999;">—</td>
+            <td>
+                <input type="text" class="input-comentario" placeholder="Escribe un comentario..." style="width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 4px; font-size: 12px;">
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+function pintarTablaConsolidadaConTotal(datos) {
+    const tbody = document.getElementById('tablaConsolidadaBody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    datos.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><strong>${item.nombre}</strong></td>
+            <td>${item.unidad}</td>
+            <td>${item.cantidad.toFixed(2)}</td>
+            <td><strong style="color: #2563eb;">${item.cantidad_total.toFixed(2)}</strong></td>
+            <td>
+                <input type="text" class="input-comentario" placeholder="Escribe un comentario..." style="width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 4px; font-size: 12px;">
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
 }
