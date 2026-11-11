@@ -131,14 +131,22 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // --- Agregar sección: 100% en frontend ---
     if (btnAddSection && sectionList) {
-        btnAddSection.addEventListener('click', async () => {
-            try {
-                const seccionesActualizadas = await invoke('agregar_seccion');
-                renderizarSecciones(seccionesActualizadas, sectionList);
-            } catch (error) {
-                console.error("Error al agregar sección:", error);
-            }
+        btnAddSection.addEventListener('click', () => {
+            // Calcular siguiente id disponible (evita colisiones tras eliminar)
+            const nextId = seccionesActuales.length > 0
+                ? Math.max(...seccionesActuales.map(s => s.id)) + 1
+                : 1;
+
+            seccionesActuales.push({
+                id: nextId,
+                nombre: "Nueva Sección",
+                alumnos: 0,
+                proporcion: 0.0
+            });
+
+            renderizarSecciones(seccionesActuales, sectionList);
         });
     }
 
@@ -177,8 +185,10 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 function renderizarSecciones(secciones, contenedor) {
+    // Guardamos copia profunda para trabajar con ella
     seccionesActuales = JSON.parse(JSON.stringify(secciones));
     contenedor.innerHTML = '';
+
     seccionesActuales.forEach(seccion => {
         const li = document.createElement('li');
         li.innerHTML = `
@@ -192,18 +202,30 @@ function renderizarSecciones(secciones, contenedor) {
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
             </button>
         `;
+
         const inputAlumnos = li.querySelector('.input-alumnos');
         const inputProporcion = li.querySelector('.input-proporcion');
+        const btnDelete = li.querySelector('.btn-delete-section');
+
         inputAlumnos.addEventListener('input', (e) => {
             const id = parseInt(e.target.dataset.id);
             const sec = seccionesActuales.find(s => s.id === id);
             if (sec) sec.alumnos = parseInt(e.target.value) || 0;
         });
+
         inputProporcion.addEventListener('input', (e) => {
             const id = parseInt(e.target.dataset.id);
             const sec = seccionesActuales.find(s => s.id === id);
             if (sec) sec.proporcion = parseFloat(e.target.value) || 0.0;
         });
+
+        // ✅ FIX: listener de eliminar
+        btnDelete.addEventListener('click', () => {
+            const id = parseInt(btnDelete.dataset.id);
+            seccionesActuales = seccionesActuales.filter(s => s.id !== id);
+            renderizarSecciones(seccionesActuales, contenedor);
+        });
+
         contenedor.appendChild(li);
     });
 }
@@ -259,9 +281,15 @@ async function cargarGruposGuardados() {
 function usarGrupoGuardado(grupo) {
     const inputTitulo = document.getElementById('groupTitle');
     if (inputTitulo) inputTitulo.value = grupo.nombre;
+
+    // Reasignar IDs consecutivos al cargar
+    const seccionesNormalizadas = grupo.secciones.map((s, i) => ({
+        ...s,
+        id: i + 1
+    }));
+
     const sectionList = document.getElementById('sectionList');
-    if (sectionList) renderizarSecciones(grupo.secciones, sectionList);
-    console.log(`Grupo "${grupo.nombre}" cargado en el editor.`);
+    if (sectionList) renderizarSecciones(seccionesNormalizadas, sectionList);
 }
 
 async function cargarArchivosRecientes() {
