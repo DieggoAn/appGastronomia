@@ -49,3 +49,25 @@ pub fn obtener_archivos_recientes(app: tauri::AppHandle) -> Result<Vec<ArchivoRe
     // Si no hay archivos guardados o hay un error, devolvemos una lista vacía
     Ok(Vec::new())
 }
+
+// Comando para quitar un archivo de la lista de recientes
+#[tauri::command]
+pub fn eliminar_archivo_reciente(app: tauri::AppHandle, ruta: String) -> Result<(), String> {
+    let store = app.store("recientes.json").map_err(|e| e.to_string())?;
+
+    let mut archivos_guardados: Vec<ArchivoReciente> = Vec::new();
+    if let Some(valor) = store.get("lista_archivos") {
+        if let Ok(lista) = serde_json::from_value::<Vec<ArchivoReciente>>(valor) {
+            archivos_guardados = lista;
+        }
+    }
+
+    // Eliminamos solo la ruta indicada; el archivo en disco no se toca
+    archivos_guardados.retain(|a| a.ruta != ruta);
+
+    let json_value = serde_json::to_value(archivos_guardados).map_err(|e| e.to_string())?;
+    store.set("lista_archivos", json_value);
+    store.save().map_err(|e| e.to_string())?;
+
+    Ok(())
+}

@@ -3,6 +3,7 @@ const { invoke } = window.__TAURI__.core;
 // Variable global para mantener las secciones actuales en JS
 let seccionesActuales = [];
 let ingredientesConsolidados = []; 
+let tituloConsolidado = 'Consolidado de ingredientes';
 
 // --- ÚNICO BLOQUE DOMContentLoaded ---
 window.addEventListener('DOMContentLoaded', () => {
@@ -14,6 +15,24 @@ window.addEventListener('DOMContentLoaded', () => {
     const btnAddExcel = document.getElementById('btnAddExcel');
     const btnProcesarSeleccionadas = document.getElementById('btnProcesarSeleccionadas');
     const btnCalcularTotal = document.getElementById('btnCalcularTotal');
+    const inputTituloConsolidado = document.getElementById('tituloConsolidado');
+
+    if (inputTituloConsolidado) {
+        inputTituloConsolidado.value = tituloConsolidado;
+
+        inputTituloConsolidado.addEventListener('input', () => {
+            tituloConsolidado = inputTituloConsolidado.value;
+        });
+
+        inputTituloConsolidado.addEventListener('blur', () => {
+            if (inputTituloConsolidado.value.trim() === '') {
+                tituloConsolidado = 'Consolidado de ingredientes';
+                inputTituloConsolidado.value = tituloConsolidado;
+            } else {
+                tituloConsolidado = inputTituloConsolidado.value;
+            }
+        });
+    }
 
     if (btnCalcularTotal) {
         btnCalcularTotal.addEventListener('click', async () => {
@@ -304,7 +323,8 @@ async function cargarArchivosRecientes() {
             const detalles = document.createElement('details');
             detalles.className = 'excel-file-details';
 
-            const nombreArchivo = archivo.ruta.split(/[\\/]/).pop();
+            // Se muestra el nombre sin la extensión del archivo
+            const nombreArchivo = archivo.ruta.split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
 
             detalles.innerHTML = `
                 <summary class="excel-file-summary">
@@ -316,6 +336,9 @@ async function cargarArchivosRecientes() {
                         <line x1="8" y1="17" x2="16" y2="17"/>
                     </svg>
                     <span>${nombreArchivo}</span>
+                    <svg class="icon chevron" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M6 9l6 6 6-6"/>
+                    </svg>
                 </summary>
                 <ul class="sheets-list">
                     <li class="loading-text">Cargando hojas...</li>
@@ -324,22 +347,24 @@ async function cargarArchivosRecientes() {
 
             detalles.dataset.ruta = archivo.ruta;
 
-            const chkFile = detalles.querySelector('.chk-file');
-
-            chkFile.addEventListener('change', (e) => {
-                const isChecked = e.target.checked;
-                const chkHojas = detalles.querySelectorAll('.chk-sheet');
-                chkHojas.forEach(chk => {
-                    chk.checked = isChecked;
-                });
+            // Menú de contexto (click derecho) para las opciones del archivo
+            detalles.addEventListener('contextmenu', (evento) => {
+                abrirMenuContextoArchivo(evento, detalles);
             });
 
-            detalles.addEventListener('toggle', async () => {
-                const ul = detalles.querySelector('.sheets-list');
-                if (detalles.open && ul.children.length === 1 && ul.innerHTML.includes('Cargando')) {
+            const chkFile = detalles.querySelector('.chk-file');
+            const listaHojas = detalles.querySelector('.sheets-list');
+            let hojasCargadas = false;
+            let promesaCarga = null;
+
+            async function cargarHojas() {
+                if (hojasCargadas) return;
+                if (promesaCarga) return promesaCarga;
+
+                promesaCarga = (async () => {
                     try {
                         const hojas = await invoke('obtener_hojas_excel', { ruta: archivo.ruta });
-                        ul.innerHTML = '';
+                        listaHojas.innerHTML = '';
 
                         hojas.forEach(nombreHoja => {
                             const liHoja = document.createElement('li');
@@ -365,11 +390,39 @@ async function cargarArchivosRecientes() {
                             // Ya NO hay listener de clic en .sheet-name.
                             // El procesamiento lo dispara el botón #btnProcesarSeleccionadas.
 
-                            ul.appendChild(liHoja);
+                            listaHojas.appendChild(liHoja);
                         });
+
+                        hojasCargadas = true;
                     } catch (error) {
-                        ul.innerHTML = `<li class="error-text">Error al leer el archivo</li>`;
+                        listaHojas.innerHTML = `<li class="error-text">Error al leer el archivo</li>`;
+                    } finally {
+                        promesaCarga = null;
                     }
+                })();
+
+                return promesaCarga;
+            }
+
+            chkFile.addEventListener('change', async (e) => {
+                const isChecked = e.target.checked;
+
+                // Si el acordeón nunca se abrió, las hojas aún no existen: cargarlas antes de tildarlas
+                if (!hojasCargadas) {
+                    await cargarHojas();
+                }
+
+                const chkHojas = detalles.querySelectorAll('.chk-sheet');
+                chkHojas.forEach(chk => {
+                    chk.checked = isChecked;
+                });
+
+                chkFile.indeterminate = false;
+            });
+
+            detalles.addEventListener('toggle', async () => {
+                if (detalles.open && !hojasCargadas) {
+                    await cargarHojas();
                 }
             });
 
@@ -379,6 +432,101 @@ async function cargarArchivosRecientes() {
         console.error("Error al cargar archivos recientes:", error);
     }
 }
+
+// --- MENÚ DE CONTEXTO DE LOS ARCHIVOS ---
+
+function cerrarMenuContextoArchivo() {
+    const menu = document.getElementById('menuContextoArchivo');
+    if (menu) menu.remove();
+}
+
+function abrirMenuContextoArchivo(evento, detalles) {
+    evento.preventDefault();
+    evento.stopPropagation();
+    cerrarMenuContextoArchivo();
+
+    const menu = document.createElement('div');
+    menu.className = 'context-menu';
+    menu.id = 'menuContextoArchivo';
+
+    // Cada entrada del menú es una acción; a futuro se pueden agregar más opciones aquí
+    const opciones = [
+        {
+            texto: 'Eliminar',
+            clase: 'danger',
+            accion: () => eliminarArchivoDeLista(detalles)
+        }
+    ];
+
+    opciones.forEach(opcion => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'context-menu-item' + (opcion.clase ? ` ${opcion.clase}` : '');
+        item.textContent = opcion.texto;
+
+        item.addEventListener('click', () => {
+            cerrarMenuContextoArchivo();
+            opcion.accion();
+        });
+
+        menu.appendChild(item);
+    });
+
+    // Evita que el clic derecho sobre el propio menú abra otro menú
+    menu.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    document.body.appendChild(menu);
+
+    // Posicionar el menú junto al cursor sin salirse de la ventana
+    const rect = menu.getBoundingClientRect();
+    const margen = 4;
+    const x = Math.min(evento.clientX, window.innerWidth - rect.width - margen);
+    const y = Math.min(evento.clientY, window.innerHeight - rect.height - margen);
+
+    menu.style.left = `${Math.max(margen, x)}px`;
+    menu.style.top = `${Math.max(margen, y)}px`;
+}
+
+async function eliminarArchivoDeLista(detalles) {
+    const ruta = detalles.dataset.ruta;
+    const nombre = ruta.split(/[\\/]/).pop();
+
+    const confirmar = await window.__TAURI__.dialog.ask(
+        `¿Quitar "${nombre}" de la lista de archivos recientes?`,
+        {
+            title: 'Eliminar archivo',
+            kind: 'warning',
+            okLabel: 'Eliminar',
+            cancelLabel: 'Cancelar'
+        }
+    );
+
+    if (!confirmar) return;
+
+    try {
+        await invoke('eliminar_archivo_reciente', { ruta });
+        detalles.remove();
+    } catch (error) {
+        console.error('Error al eliminar el archivo de la lista:', error);
+        await window.__TAURI__.dialog.message(
+            'No se pudo eliminar: ' + error,
+            { title: 'Error', kind: 'error' }
+        );
+    }
+}
+
+// Cerrar el menú de contexto al interactuar fuera de él
+document.addEventListener('click', cerrarMenuContextoArchivo);
+document.addEventListener('contextmenu', (evento) => {
+    if (!evento.target.closest || !evento.target.closest('.excel-file-details')) {
+        cerrarMenuContextoArchivo();
+    }
+});
+document.addEventListener('keydown', (evento) => {
+    if (evento.key === 'Escape') cerrarMenuContextoArchivo();
+});
+window.addEventListener('blur', cerrarMenuContextoArchivo);
+window.addEventListener('resize', cerrarMenuContextoArchivo);
 
 function pintarTablaConsolidada(datos) {
     const tbody = document.getElementById('tablaConsolidadaBody');

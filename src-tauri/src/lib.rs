@@ -27,6 +27,7 @@ pub fn run() {
             secciones::auto_ajustar_proporciones,
             recientes::guardar_archivos_recientes,  
             recientes::obtener_archivos_recientes,
+            recientes::eliminar_archivo_reciente,
             excel::obtener_hojas_excel,
             excel::procesar_hojas_excel,
             excel::calcular_total    
