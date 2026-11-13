@@ -20,7 +20,73 @@ pub struct IngredienteConTotal {
     pub cantidad_total: f32,
 }
 
-// --- 2. Comandos ---
+// --- 2. Utilidades de normalización ---
+
+/// Clave normalizada para agrupar ingredientes equivalentes.
+/// Se conservan ñ/Ñ porque representan un sonido distinto y no son una "n" acentuada:
+/// "piña" y "pina" deben seguir siendo ingredientes diferentes.
+pub fn clave_ingrediente(nombre: &str) -> String {
+    let mut sin_tildes = String::with_capacity(nombre.len());
+
+    for c in nombre.chars() {
+        let base = match c {
+            'á' | 'Á' => 'a',
+            'é' | 'É' => 'e',
+            'í' | 'Í' => 'i',
+            'ó' | 'Ó' => 'o',
+            'ú' | 'Ú' | 'ü' | 'Ü' => 'u',
+            // ñ/Ñ se deja intacta a propósito (piña ≠ pina)
+            otro => otro,
+        };
+        sin_tildes.push(base);
+    }
+
+    // Minúsculas + espacios colapsados a uno solo
+    let colapsado = sin_tildes
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Sin puntuación final (. , ; :)
+    colapsado
+        .trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':'))
+        .trim_end()
+        .to_string()
+}
+
+/// Nombre visible limpio: sin espacios sobrantes ni puntuación final.
+fn nombre_visible(nombre: &str) -> String {
+    let colapsado = nombre.split_whitespace().collect::<Vec<_>>().join(" ");
+    colapsado
+        .trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':'))
+        .trim_end()
+        .to_string()
+}
+
+/// Puntúa qué variante se ve "más bonita" para elegir el nombre visible:
+/// las tildes/diéresis suman 2 y una inicial mayúscula suma 1.
+pub fn puntuacion_nombre(nombre: &str) -> i32 {
+    let mut puntuacion = 0;
+
+    for c in nombre.chars() {
+        match c {
+            'á' | 'é' | 'í' | 'ó' | 'ú' | 'ü' | 'Á' | 'É' | 'Í' | 'Ó' | 'Ú' | 'Ü' => {
+                puntuacion += 2
+            }
+            _ => {}
+        }
+    }
+
+    // is_uppercase() cubre también Á, É, Í, Ó, Ú y Ñ
+    if nombre.trim_start().chars().next().is_some_and(|c| c.is_uppercase()) {
+        puntuacion += 1;
+    }
+
+    puntuacion
+}
+
+// --- 3. Comandos ---
 
 #[tauri::command]
 pub fn obtener_hojas_excel(ruta: String) -> Result<Vec<String>, String> {
@@ -126,18 +192,25 @@ pub fn procesar_hojas_excel(
                 continue;
             }
 
-            let clave = format!("{}|{}", nombre.to_lowercase(), um.to_lowercase());
+            let clave = format!("{}|{}", clave_ingrediente(&nombre), um.to_lowercase());
             let entry = mapa.entry(clave).or_insert_with(|| IngredienteConsolidado {
-                nombre: nombre.clone(),
+                nombre: nombre_visible(&nombre),
                 unidad: um.clone(),
                 cantidad: 0.0,
             });
+
+            // Dejamos como nombre visible la variante con mejor puntuación
+            // ("Azúcar" por encima de "azucar" o "AZÚCAR")
+            if puntuacion_nombre(&nombre) > puntuacion_nombre(&entry.nombre) {
+                entry.nombre = nombre_visible(&nombre);
+            }
+
             entry.cantidad += cantidad;
         }
     }
 
     let mut resultado: Vec<IngredienteConsolidado> = mapa.into_values().collect();
-    resultado.sort_by(|a, b| a.nombre.to_lowercase().cmp(&b.nombre.to_lowercase()));
+    resultado.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
     Ok(resultado)
 }
 
@@ -167,6 +240,6 @@ pub fn calcular_total(
     })
     .collect();
 
-    resultado.sort_by(|a, b| a.nombre.to_lowercase().cmp(&b.nombre.to_lowercase()));
+    resultado.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
     Ok(resultado)
 }
