@@ -14,6 +14,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const btnAdjust = document.getElementById('btnAdjust');
     const btnAddExcel = document.getElementById('btnAddExcel');
     const btnProcesarSeleccionadas = document.getElementById('btnProcesarSeleccionadas');
+    const btnLimpiarSeleccion = document.getElementById('btnLimpiarSeleccion');
     const btnCalcularTotal = document.getElementById('btnCalcularTotal');
     const inputTituloConsolidado = document.getElementById('tituloConsolidado');
 
@@ -31,6 +32,21 @@ window.addEventListener('DOMContentLoaded', () => {
             } else {
                 tituloConsolidado = inputTituloConsolidado.value;
             }
+        });
+    }
+
+    // Click derecho sobre una fila de ingredientes: menú de colores
+    const tablaConsolidadaBody = document.getElementById('tablaConsolidadaBody');
+    if (tablaConsolidadaBody) {
+        tablaConsolidadaBody.addEventListener('contextmenu', (evento) => {
+            const fila = evento.target.closest('tr');
+            const celdaNombre = fila ? fila.querySelector('strong') : null;
+            if (!celdaNombre) return; // filas de estado sin ingrediente
+
+            evento.preventDefault();
+            evento.stopPropagation();
+
+            abrirMenuColores(evento.clientX, evento.clientY, celdaNombre.textContent.trim());
         });
     }
 
@@ -118,11 +134,38 @@ window.addEventListener('DOMContentLoaded', () => {
             }
 
             if (todosLosDatos.length > 0) {
-                ingredientesConsolidados = todosLosDatos;
-                pintarTablaConsolidada(todosLosDatos);
+                try {
+                    // Consolidar entre archivos (suma + orden global)
+                    const consolidado = await invoke('consolidar_entre_archivos', {
+                        ingredientes: todosLosDatos
+                    });
+                    ingredientesConsolidados = consolidado;
+                    pintarTablaConsolidada(consolidado);
+                } catch (error) {
+                    console.error('Error al consolidar los ingredientes:', error);
+                    ingredientesConsolidados = [];
+                    tbody.innerHTML = '<tr><td colspan="4">No se pudieron consolidar los ingredientes.</td></tr>';
+                    await window.__TAURI__.dialog.message(
+                        'No se pudo consolidar los ingredientes: ' + error,
+                        { title: 'Error', kind: 'error' }
+                    );
+                }
             } else {
                 tbody.innerHTML = '<tr><td colspan="4">No se obtuvieron datos.</td></tr>';
             }
+        });
+    }
+
+    // Limpia visualmente la selección de archivos y hojas
+    if (btnLimpiarSeleccion) {
+        btnLimpiarSeleccion.addEventListener('click', () => {
+            document.querySelectorAll('.chk-file, .chk-sheet').forEach(chk => {
+                chk.checked = false;
+            });
+
+            document.querySelectorAll('.chk-file').forEach(chk => {
+                chk.indeterminate = false;
+            });
         });
     }
 
@@ -349,7 +392,16 @@ async function cargarArchivosRecientes() {
 
             // Menú de contexto (click derecho) para las opciones del archivo
             detalles.addEventListener('contextmenu', (evento) => {
-                abrirMenuContextoArchivo(evento, detalles);
+                evento.preventDefault();
+                evento.stopPropagation();
+
+                abrirMenuContextual(evento.clientX, evento.clientY, [
+                    {
+                        label: 'Eliminar',
+                        danger: true,
+                        onClick: () => eliminarArchivoDeLista(detalles)
+                    }
+                ], detalles);
             });
 
             const chkFile = detalles.querySelector('.chk-file');
@@ -371,10 +423,10 @@ async function cargarArchivosRecientes() {
                             liHoja.className = 'sheet-item';
 
                             liHoja.innerHTML = `
-                                <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
+                                <label class="sheet-item-label">
                                     <input type="checkbox" class="chk-sheet" data-hoja="${nombreHoja}">
-                                    <span class="sheet-name" style="cursor: pointer; flex: 1;">${nombreHoja}</span>
-                                </div>
+                                    <span class="sheet-name">${nombreHoja}</span>
+                                </label>
                             `;
 
                             const chkSheet = liHoja.querySelector('.chk-sheet');
@@ -433,58 +485,152 @@ async function cargarArchivosRecientes() {
     }
 }
 
-// --- MENÚ DE CONTEXTO DE LOS ARCHIVOS ---
+// --- MENÚ CONTEXTUAL GENÉRICO ---
 
-function cerrarMenuContextoArchivo() {
-    const menu = document.getElementById('menuContextoArchivo');
-    if (menu) menu.remove();
+const COLORES_INGREDIENTE = [
+    '#f8d7da', '#ffe8cc', '#fff3bf', '#d3f9d8',
+    '#c5f6fa', '#d0ebff', '#e5dbff', '#f3d9fa'
+];
+
+// Color elegido por ingrediente (se conserva entre repintados de la tabla)
+const coloresIngredientes = new Map();
+
+// Cierra cualquier menú contextual abierto y limpia el marcado del origen
+function cerrarMenuContextual() {
+    document.querySelectorAll('.context-menu').forEach(menu => menu.remove());
+    document.querySelectorAll('.context-target').forEach(el => el.classList.remove('context-target'));
 }
 
-function abrirMenuContextoArchivo(evento, detalles) {
-    evento.preventDefault();
-    evento.stopPropagation();
-    cerrarMenuContextoArchivo();
+// Única implementación compartida: inserta, posiciona (ajustando al viewport),
+// marca el elemento de origen y dispara la animación de entrada.
+function mostrarMenuContextual(menu, x, y, targetElement = null) {
+    cerrarMenuContextual();
 
-    const menu = document.createElement('div');
-    menu.className = 'context-menu';
-    menu.id = 'menuContextoArchivo';
+    if (targetElement) {
+        targetElement.classList.add('context-target');
+    }
 
-    // Cada entrada del menú es una acción; a futuro se pueden agregar más opciones aquí
-    const opciones = [
-        {
-            texto: 'Eliminar',
-            clase: 'danger',
-            accion: () => eliminarArchivoDeLista(detalles)
-        }
-    ];
-
-    opciones.forEach(opcion => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'context-menu-item' + (opcion.clase ? ` ${opcion.clase}` : '');
-        item.textContent = opcion.texto;
-
-        item.addEventListener('click', () => {
-            cerrarMenuContextoArchivo();
-            opcion.accion();
-        });
-
-        menu.appendChild(item);
-    });
-
+    menu.classList.add('context-menu');
     // Evita que el clic derecho sobre el propio menú abra otro menú
     menu.addEventListener('contextmenu', (e) => e.preventDefault());
 
     document.body.appendChild(menu);
 
-    // Posicionar el menú junto al cursor sin salirse de la ventana
-    const rect = menu.getBoundingClientRect();
+    // Se mide ya insertado para que no se salga de la ventana
     const margen = 4;
-    const x = Math.min(evento.clientX, window.innerWidth - rect.width - margen);
-    const y = Math.min(evento.clientY, window.innerHeight - rect.height - margen);
+    const rect = menu.getBoundingClientRect();
+    const posX = Math.min(x, window.innerWidth - rect.width - margen);
+    const posY = Math.min(y, window.innerHeight - rect.height - margen);
 
-    menu.style.left = `${Math.max(margen, x)}px`;
-    menu.style.top = `${Math.max(margen, y)}px`;
+    menu.style.left = `${Math.max(margen, posX)}px`;
+    menu.style.top = `${Math.max(margen, posY)}px`;
+}
+
+// Menú genérico: opciones = [{ label, icon, danger, onClick }]
+function abrirMenuContextual(x, y, opciones, targetElement = null) {
+    const menu = document.createElement('div');
+    menu.id = 'menuContextual';
+
+    opciones.forEach(opcion => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'context-menu-item' + (opcion.danger ? ' danger' : '');
+
+        if (opcion.icon) {
+            const icono = document.createElement('span');
+            icono.className = 'context-menu-icon';
+            icono.innerHTML = opcion.icon; // marcado SVG
+
+            const texto = document.createElement('span');
+            texto.textContent = opcion.label;
+
+            item.append(icono, texto);
+        } else {
+            item.textContent = opcion.label;
+        }
+
+        item.addEventListener('click', () => {
+            cerrarMenuContextual();
+            if (typeof opcion.onClick === 'function') opcion.onClick();
+        });
+
+        menu.appendChild(item);
+    });
+
+    mostrarMenuContextual(menu, x, y, targetElement);
+}
+
+// Menú de colores de una fila de ingrediente: grid de 8 swatches + "Quitar color"
+function abrirMenuColores(x, y, nombreIngrediente) {
+    const filaOrigen = Array.from(document.querySelectorAll('#tablaConsolidadaBody tr'))
+        .find(fila => fila.querySelector('strong')?.textContent.trim() === nombreIngrediente) || null;
+
+    const menu = document.createElement('div');
+    menu.id = 'menuColores';
+    menu.classList.add('context-menu-colores');
+
+    const grid = document.createElement('div');
+    grid.className = 'color-grid';
+
+    COLORES_INGREDIENTE.forEach(color => {
+        const swatch = document.createElement('button');
+        swatch.type = 'button';
+        swatch.className = 'color-swatch';
+        swatch.style.background = color;
+        swatch.title = color;
+        swatch.setAttribute('aria-label', `Color ${color}`);
+
+        swatch.addEventListener('click', () => {
+            cerrarMenuContextual();
+            aplicarColorIngrediente(nombreIngrediente, color);
+        });
+
+        grid.appendChild(swatch);
+    });
+
+    menu.appendChild(grid);
+
+    const quitar = document.createElement('button');
+    quitar.type = 'button';
+    quitar.className = 'context-menu-item danger';
+    quitar.textContent = 'Quitar color';
+
+    quitar.addEventListener('click', () => {
+        cerrarMenuContextual();
+        aplicarColorIngrediente(nombreIngrediente, null);
+    });
+
+    menu.appendChild(quitar);
+
+    mostrarMenuContextual(menu, x, y, filaOrigen);
+}
+
+function aplicarColorIngrediente(nombre, color) {
+    if (color) {
+        coloresIngredientes.set(nombre, color);
+    } else {
+        coloresIngredientes.delete(nombre);
+    }
+
+    document.querySelectorAll('#tablaConsolidadaBody tr').forEach(fila => {
+        const celdaNombre = fila.querySelector('strong');
+        if (celdaNombre && celdaNombre.textContent.trim() === nombre) {
+            fila.style.backgroundColor = color || '';
+        }
+    });
+}
+
+// Reaplica los colores guardados después de repintar la tabla
+function aplicarColoresGuardados(tbody) {
+    if (coloresIngredientes.size === 0) return;
+
+    tbody.querySelectorAll('tr').forEach(fila => {
+        const celdaNombre = fila.querySelector('strong');
+        if (!celdaNombre) return;
+
+        const color = coloresIngredientes.get(celdaNombre.textContent.trim());
+        if (color) fila.style.backgroundColor = color;
+    });
 }
 
 async function eliminarArchivoDeLista(detalles) {
@@ -515,18 +661,19 @@ async function eliminarArchivoDeLista(detalles) {
     }
 }
 
-// Cerrar el menú de contexto al interactuar fuera de él
-document.addEventListener('click', cerrarMenuContextoArchivo);
+// Cerrar el menú al interactuar fuera de él, al hacer scroll o al perder el foco
+document.addEventListener('click', cerrarMenuContextual);
 document.addEventListener('contextmenu', (evento) => {
-    if (!evento.target.closest || !evento.target.closest('.excel-file-details')) {
-        cerrarMenuContextoArchivo();
+    if (!evento.target.closest || !evento.target.closest('.excel-file-details, #tablaConsolidadaBody tr')) {
+        cerrarMenuContextual();
     }
 });
 document.addEventListener('keydown', (evento) => {
-    if (evento.key === 'Escape') cerrarMenuContextoArchivo();
+    if (evento.key === 'Escape') cerrarMenuContextual();
 });
-window.addEventListener('blur', cerrarMenuContextoArchivo);
-window.addEventListener('resize', cerrarMenuContextoArchivo);
+document.addEventListener('scroll', cerrarMenuContextual, true);
+window.addEventListener('blur', cerrarMenuContextual);
+window.addEventListener('resize', cerrarMenuContextual);
 
 function pintarTablaConsolidada(datos) {
     const tbody = document.getElementById('tablaConsolidadaBody');
@@ -546,6 +693,8 @@ function pintarTablaConsolidada(datos) {
         `;
         tbody.appendChild(tr);
     });
+
+    aplicarColoresGuardados(tbody);
 }
 function pintarTablaConsolidadaConTotal(datos) {
     const tbody = document.getElementById('tablaConsolidadaBody');
@@ -565,4 +714,6 @@ function pintarTablaConsolidadaConTotal(datos) {
         `;
         tbody.appendChild(tr);
     });
+
+    aplicarColoresGuardados(tbody);
 }

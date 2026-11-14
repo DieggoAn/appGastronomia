@@ -55,13 +55,36 @@ pub fn clave_ingrediente(nombre: &str) -> String {
         .to_string()
 }
 
-/// Nombre visible limpio: sin espacios sobrantes ni puntuación final.
+/// Nombre visible limpio: sin espacios sobrantes, sin puntuación final y
+/// con los nombres TODO EN MAYÚSCULAS pasados a Tipo Título ("SAL" → "Sal").
 fn nombre_visible(nombre: &str) -> String {
     let colapsado = nombre.split_whitespace().collect::<Vec<_>>().join(" ");
-    colapsado
+    let limpio = colapsado
         .trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':'))
-        .trim_end()
-        .to_string()
+        .trim_end();
+
+    let es_todo_mayusculas = limpio.chars().any(|c| c.is_alphabetic())
+        && limpio
+            .chars()
+            .all(|c| !c.is_alphabetic() || c.is_uppercase());
+
+    if !es_todo_mayusculas {
+        return limpio.to_string();
+    }
+
+    limpio
+        .split(' ')
+        .map(|palabra| {
+            let mut chars = palabra.chars();
+            match chars.next() {
+                Some(primera) => {
+                    primera.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Puntúa qué variante se ve "más bonita" para elegir el nombre visible:
@@ -211,6 +234,48 @@ pub fn procesar_hojas_excel(
 
     let mut resultado: Vec<IngredienteConsolidado> = mapa.into_values().collect();
     resultado.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
+    Ok(resultado)
+}
+
+/// Consolida los ingredientes de varios archivos en una sola lista:
+/// suma cantidades equivalentes y ordena alfabéticamente de forma global.
+///
+/// Estrategia para unidades distintas: no se suman cantidades incompatibles.
+/// Se usa "clave_ingrediente|unidad" como clave, así "Azúcar" en g y "azucar"
+/// en kg quedan como dos filas separadas y el usuario decide.
+#[tauri::command]
+pub fn consolidar_entre_archivos(
+    ingredientes: Vec<IngredienteConsolidado>,
+) -> Result<Vec<IngredienteConsolidado>, String> {
+    let mut mapa: HashMap<String, IngredienteConsolidado> = HashMap::new();
+
+    for item in ingredientes {
+        let nombre = item.nombre.trim().to_string();
+        if nombre.is_empty() {
+            continue;
+        }
+
+        let unidad = item.unidad.trim().to_string();
+        let clave = format!("{}|{}", clave_ingrediente(&nombre), unidad.to_lowercase());
+
+        let entry = mapa.entry(clave).or_insert_with(|| IngredienteConsolidado {
+            nombre: nombre_visible(&nombre),
+            unidad,
+            cantidad: 0.0,
+        });
+
+        // Conservamos la variante con mejor puntuación como nombre visible
+        if puntuacion_nombre(&nombre) > puntuacion_nombre(&entry.nombre) {
+            entry.nombre = nombre_visible(&nombre);
+        }
+
+        entry.cantidad += item.cantidad;
+    }
+
+    // Orden alfabético GLOBAL (por clave normalizada, estable entre acentos)
+    let mut resultado: Vec<IngredienteConsolidado> = mapa.into_values().collect();
+    resultado.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
+
     Ok(resultado)
 }
 

@@ -30,6 +30,7 @@ pub fn run() {
             recientes::eliminar_archivo_reciente,
             excel::obtener_hojas_excel,
             excel::procesar_hojas_excel,
+            excel::consolidar_entre_archivos,
             excel::calcular_total    
         ])
         .run(tauri::generate_context!())

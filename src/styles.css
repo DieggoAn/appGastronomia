@@ -62,10 +62,10 @@ body {
 }
 .banner-brand .icon { width: 16px; height: 16px; stroke-width: 2; }
 .banner-version { font-size: 11px; font-weight: 400; opacity: 0.7; padding-left: 4px; }
-.banner-buttons { display: flex; gap: 2px; flex-wrap: wrap; }
+.banner-buttons { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
 .banner-buttons .btn-nav {
     background: transparent;
-    border: none;
+    border: 1px solid transparent;
     color: rgba(255, 255, 255, 0.85);
     padding: 6px 12px;
     border-radius: var(--radius-sm);
@@ -73,10 +73,14 @@ body {
     font-weight: 500;
     font-family: inherit;
     cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
+    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
-.banner-buttons .btn-nav:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.banner-buttons .btn-nav .icon { width: 15px; height: 15px; stroke-width: 1.8; }
+.banner-buttons .btn-nav:hover { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.2); color: #fff; }
 
 /* CONTENEDOR PRINCIPAL */
 .app-container { display: flex; flex: 1; overflow: hidden; background: var(--border); gap: 1px; }
@@ -149,31 +153,55 @@ body {
 }
 .btn-add-file:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
-.export-buttons {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding-top: 4px;
-    border-top: 1px solid var(--border);
+/* Acción discreta dentro del encabezado de Archivos */
+.btn-summary-action {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: none;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease;
 }
-.export-buttons .btn-export {
+.btn-summary-action:hover { color: var(--accent); background: var(--accent-soft); }
+.btn-summary-action:hover .icon { color: currentColor; }
+
+/* Acciones del panel de archivos */
+.sidebar-actions {
+    display: flex;
+    gap: 6px;
+}
+.btn-secondary {
+    flex: 1 1 0;
+    min-width: 0;
     background: var(--panel);
     border: 1px solid var(--border-strong);
     color: var(--text);
-    padding: 8px 10px;
+    padding: 7px 8px;
     border-radius: var(--radius-md);
-    font-weight: 500;
-    font-size: 12px;
     font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
     display: flex;
     align-items: center;
-    justify-content: flex-start;
-    gap: 8px;
-    transition: border-color 0.12s ease, background 0.12s ease;
+    justify-content: center;
+    gap: 6px;
+    white-space: nowrap;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
-.export-buttons .btn-export .icon { color: var(--accent); }
-.export-buttons .btn-export:hover { border-color: var(--accent); background: var(--accent-soft); }
+.btn-secondary .icon { width: 14px; height: 14px; color: var(--text-muted); }
+.btn-secondary:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.btn-secondary:hover .icon { color: var(--accent); }
 
 /* ÁREA CENTRAL */
 .main-center {
@@ -222,6 +250,28 @@ body {
 }
 .table-title-input:hover { border-color: var(--border-strong); }
 .table-title-input:focus { border-color: var(--accent); background: var(--panel); box-shadow: 0 0 0 1px var(--accent); }
+
+/* Acciones de la cabecera de la tabla */
+.btn-toolbar {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.btn-toolbar .icon { width: 14px; height: 14px; color: var(--text-faint); }
+.btn-toolbar:hover { background: var(--hover); border-color: var(--border); color: var(--text); }
+.btn-toolbar:hover .icon { color: var(--accent); }
 .data-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .data-table th {
     background: var(--bg);
@@ -461,6 +511,28 @@ body {
 .btn-add-section:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .btn-add-section:hover .icon { color: var(--accent); }
 
+/* Acción principal del panel de secciones */
+.btn-calc-total {
+    width: calc(100% - 20px);
+    margin: 8px 10px 10px;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+.btn-calc-total .icon { color: #fff; }
+.btn-calc-total:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+
 .saved-sections-box .section-box-header { justify-content: flex-start; }
 .saved-sections-box .section-box-header span {
     font-weight: 600;
@@ -680,6 +752,12 @@ body {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    transform-origin: top left;
+    animation: contextMenuIn 0.12s ease-out;
+}
+@keyframes contextMenuIn {
+    from { opacity: 0; transform: scale(0.96) translateY(-2px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
 }
 .context-menu-item {
     background: transparent;
@@ -694,10 +772,36 @@ body {
     color: var(--text);
     cursor: pointer;
     transition: background 0.12s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 .context-menu-item:hover { background: var(--hover); }
 .context-menu-item.danger { color: var(--accent); }
 .context-menu-item.danger:hover { background: var(--accent-soft); }
+.context-menu-icon { display: flex; align-items: center; }
+
+/* Elemento de origen del menú contextual */
+.context-target { background-color: var(--accent-soft) !important; }
+
+/* Menú de colores de una fila de ingredientes */
+.context-menu-colores { padding: 6px; gap: 6px; }
+.color-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 18px);
+    gap: 6px;
+    padding: 2px;
+}
+.color-swatch {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.color-swatch:hover { transform: scale(1.12); box-shadow: 0 0 0 1px var(--accent); }
 
 /* Evitar que el checkbox se haga gigante */
 .excel-file-summary input[type="checkbox"],
@@ -720,6 +824,18 @@ body {
     font-size: 12px;
     color: var(--text-muted);
 }   
+
+/* Toda el área del label es clickeable para marcar la hoja */
+.sheet-item-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    cursor: pointer; /* Toda el área es clickeable */
+}
+.sheet-item-label .sheet-name {
+    flex: 1;
+}
 
 .codes-cell {
     display: flex;
@@ -754,4 +870,15 @@ body {
 .badge-more:hover {
     background: var(--accent);
     color: #fff;
+}
+
+/* Pantallas medianas: se prioriza el icono y el layout sigue en una sola fila */
+@media (max-width: 1100px) {
+    .btn-toolbar span { display: none; }
+    .btn-toolbar { padding: 4px 6px; }
+}
+@media (max-width: 900px) {
+    .banner-buttons { gap: 2px; }
+    .banner-buttons .btn-nav { padding: 6px 8px; }
+    .banner-buttons .btn-label { display: none; }
 }
