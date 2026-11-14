@@ -31,6 +31,8 @@ pub fn run() {
             excel::obtener_hojas_excel,
             excel::procesar_hojas_excel,
             excel::consolidar_entre_archivos,
+            excel::leer_diccionario,
+            excel::asignar_codigos,
             excel::calcular_total    
         ])
         .run(tauri::generate_context!())

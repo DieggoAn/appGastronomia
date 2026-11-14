@@ -6,10 +6,20 @@ use crate::secciones::Seccion; // Para el comando calcular_total
 // --- 1. Structs (SIEMPRE al principio) ---
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DiccionarioItem {
+    pub codigo: String,
+    pub descripcion: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IngredienteConsolidado {
     pub nombre: String,
     pub unidad: String,
     pub cantidad: f32,
+    #[serde(default)]
+    pub opciones_codigo: Vec<DiccionarioItem>,
+    #[serde(default)]
+    pub codigo_seleccionado: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -18,6 +28,10 @@ pub struct IngredienteConTotal {
     pub unidad: String,
     pub cantidad: f32,
     pub cantidad_total: f32,
+    #[serde(default)]
+    pub opciones_codigo: Vec<DiccionarioItem>,
+    #[serde(default)]
+    pub codigo_seleccionado: String,
 }
 
 // --- 2. Utilidades de normalización ---
@@ -220,6 +234,8 @@ pub fn procesar_hojas_excel(
                 nombre: nombre_visible(&nombre),
                 unidad: um.clone(),
                 cantidad: 0.0,
+                opciones_codigo: Vec::new(),
+                codigo_seleccionado: String::new(),
             });
 
             // Dejamos como nombre visible la variante con mejor puntuación
@@ -262,6 +278,8 @@ pub fn consolidar_entre_archivos(
             nombre: nombre_visible(&nombre),
             unidad,
             cantidad: 0.0,
+            opciones_codigo: Vec::new(),
+            codigo_seleccionado: String::new(),
         });
 
         // Conservamos la variante con mejor puntuación como nombre visible
@@ -275,6 +293,84 @@ pub fn consolidar_entre_archivos(
     // Orden alfabético GLOBAL (por clave normalizada, estable entre acentos)
     let mut resultado: Vec<IngredienteConsolidado> = mapa.into_values().collect();
     resultado.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
+
+    Ok(resultado)
+}
+
+/// Lee el diccionario maestro: Columna A = código, Columna B = descripción.
+/// Se ignoran las filas con código vacío (ruido al final del Excel).
+#[tauri::command]
+pub fn leer_diccionario(ruta: String) -> Result<Vec<DiccionarioItem>, String> {
+    let mut workbook: Xlsx<_> =
+        open_workbook(&ruta).map_err(|e| format!("Error abriendo diccionario: {}", e))?;
+
+    let range = workbook
+        .worksheet_range_at(0)
+        .ok_or_else(|| "El diccionario no tiene hojas".to_string())?
+        .map_err(|e| format!("Error leyendo diccionario: {}", e))?;
+
+    let mut items: Vec<DiccionarioItem> = Vec::new();
+
+    // Los datos reales empiezan en la fila 2 (se omite la cabecera)
+    for row in range.rows().skip(1) {
+        let codigo = row
+            .get(0)
+            .map(|c| c.to_string().trim().to_string())
+            .unwrap_or_default();
+
+        if codigo.is_empty() {
+            continue;
+        }
+
+        let descripcion = row
+            .get(1)
+            .map(|c| c.to_string().trim().to_string())
+            .unwrap_or_default();
+
+        items.push(DiccionarioItem { codigo, descripcion });
+    }
+
+    Ok(items)
+}
+
+/// Asigna a cada ingrediente los códigos del diccionario cuya descripción
+/// contenga el nombre normalizado del ingrediente (búsqueda lineal simple).
+#[tauri::command]
+pub fn asignar_codigos(
+    ingredientes: Vec<IngredienteConsolidado>,
+    diccionario: Vec<DiccionarioItem>,
+) -> Result<Vec<IngredienteConsolidado>, String> {
+    // Normalizamos el diccionario una sola vez para no repetir el trabajo por ingrediente
+    let normalizado: Vec<(String, DiccionarioItem)> = diccionario
+        .into_iter()
+        .map(|item| (clave_ingrediente(&item.descripcion), item))
+        .collect();
+
+    let resultado = ingredientes
+        .into_iter()
+        .map(|mut ing| {
+            let clave = clave_ingrediente(&ing.nombre);
+
+            ing.opciones_codigo = if clave.is_empty() {
+                Vec::new()
+            } else {
+                normalizado
+                    .iter()
+                    .filter(|(descripcion, _)| descripcion.contains(&clave))
+                    .map(|(_, item)| item.clone())
+                    .collect()
+            };
+
+            // Con una sola coincidencia no hay nada que elegir
+            ing.codigo_seleccionado = if ing.opciones_codigo.len() == 1 {
+                ing.opciones_codigo[0].codigo.clone()
+            } else {
+                String::new()
+            };
+
+            ing
+        })
+        .collect();
 
     Ok(resultado)
 }
@@ -302,6 +398,8 @@ pub fn calcular_total(
         unidad: ing.unidad,
         cantidad: ing.cantidad,
         cantidad_total: ing.cantidad * factor,
+        opciones_codigo: ing.opciones_codigo,
+        codigo_seleccionado: ing.codigo_seleccionado,
     })
     .collect();
 

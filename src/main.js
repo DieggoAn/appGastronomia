@@ -4,6 +4,7 @@ const { invoke } = window.__TAURI__.core;
 let seccionesActuales = [];
 let ingredientesConsolidados = []; 
 let tituloConsolidado = 'Consolidado de ingredientes';
+let diccionarioMaestro = [];
 
 // --- ÚNICO BLOQUE DOMContentLoaded ---
 window.addEventListener('DOMContentLoaded', () => {
@@ -13,6 +14,8 @@ window.addEventListener('DOMContentLoaded', () => {
     const btnNewGroup = document.getElementById('btnNewGroup');
     const btnAdjust = document.getElementById('btnAdjust');
     const btnAddExcel = document.getElementById('btnAddExcel');
+    const btnAddDiccionario = document.getElementById('btnAddDiccionario');
+    const dictionaryList = document.getElementById('dictionaryList');
     const btnProcesarSeleccionadas = document.getElementById('btnProcesarSeleccionadas');
     const btnLimpiarSeleccion = document.getElementById('btnLimpiarSeleccion');
     const btnCalcularTotal = document.getElementById('btnCalcularTotal');
@@ -94,6 +97,77 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // --- Diccionario maestro (se carga una sola vez y queda en memoria) ---
+    if (btnAddDiccionario) {
+        btnAddDiccionario.addEventListener('click', async () => {
+            try {
+                const ruta = await window.__TAURI__.dialog.open({
+                    multiple: false,
+                    filters: [{ name: 'Diccionario Excel', extensions: ['xlsx', 'xls'] }]
+                });
+
+                if (!ruta) return;
+
+                diccionarioMaestro = await invoke('leer_diccionario', { ruta });
+
+                pintarDiccionarioCargado(ruta, diccionarioMaestro.length);
+
+                await window.__TAURI__.dialog.message(
+                    `Diccionario cargado con ${diccionarioMaestro.length} artículos.`,
+                    { title: 'Éxito', kind: 'info' }
+                );
+            } catch (error) {
+                console.error('Error al cargar el diccionario:', error);
+                alert('No se pudo cargar el diccionario: ' + error);
+            }
+        });
+    }
+
+    // Muestra en el panel izquierdo el diccionario cargado (reemplaza el anterior)
+    function pintarDiccionarioCargado(ruta, totalArticulos) {
+        if (!dictionaryList) return;
+
+        dictionaryList.innerHTML = '';
+
+        const archivo = ruta.split(/[\\/]/).pop();
+
+        const li = document.createElement('li');
+        li.className = 'dictionary-item';
+
+        const icono = document.createElement('span');
+        icono.className = 'dictionary-item-icon';
+        icono.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>';
+
+        const nombre = document.createElement('span');
+        nombre.className = 'dictionary-item-name';
+        nombre.textContent = archivo;
+        nombre.title = `${ruta}\n${totalArticulos} artículos`;
+
+        const eliminar = document.createElement('button');
+        eliminar.type = 'button';
+        eliminar.className = 'dictionary-delete';
+        eliminar.title = 'Quitar diccionario';
+        eliminar.setAttribute('aria-label', 'Quitar diccionario');
+        eliminar.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+        eliminar.addEventListener('click', () => {
+            diccionarioMaestro = [];
+            pintarDiccionarioVacio();
+            limpiarCodigosTabla();
+        });
+
+        li.appendChild(icono);
+        li.appendChild(nombre);
+        li.appendChild(eliminar);
+        dictionaryList.appendChild(li);
+    }
+
+    function pintarDiccionarioVacio() {
+        if (!dictionaryList) return;
+        dictionaryList.innerHTML = '<li class="dictionary-empty">No hay diccionarios cargados</li>';
+    }
+
+    pintarDiccionarioVacio();
+
     // --- NUEVO: Procesar todas las hojas seleccionadas ---
     if (btnProcesarSeleccionadas) {
         btnProcesarSeleccionadas.addEventListener('click', async () => {
@@ -107,7 +181,7 @@ window.addEventListener('DOMContentLoaded', () => {
             const tbody = document.getElementById('tablaConsolidadaBody');
             if (!tbody) return;
 
-            tbody.innerHTML = `<tr><td colspan="4">Procesando...</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="6">Procesando...</td></tr>`;
 
             // Agrupamos las hojas por archivo (ruta)
             const hojasPorArchivo = {};
@@ -136,22 +210,37 @@ window.addEventListener('DOMContentLoaded', () => {
             if (todosLosDatos.length > 0) {
                 try {
                     // Consolidar entre archivos (suma + orden global)
-                    const consolidado = await invoke('consolidar_entre_archivos', {
+                    let consolidado = await invoke('consolidar_entre_archivos', {
                         ingredientes: todosLosDatos
                     });
-                    ingredientesConsolidados = consolidado;
-                    pintarTablaConsolidada(consolidado);
+
+                    // Asignar códigos del diccionario maestro si está cargado
+                    if (diccionarioMaestro.length > 0) {
+                        consolidado = await invoke('asignar_codigos', {
+                            ingredientes: consolidado,
+                            diccionario: diccionarioMaestro
+                        });
+                    }
+
+                    // Todos los ingredientes deben exponer un código seleccionado
+                    // (vacío si aún no se ha elegido ninguno)
+                    ingredientesConsolidados = consolidado.map(ing => ({
+                        ...ing,
+                        codigo_seleccionado: ing.codigo_seleccionado || ''
+                    }));
+
+                    pintarTablaConsolidada(ingredientesConsolidados);
                 } catch (error) {
                     console.error('Error al consolidar los ingredientes:', error);
                     ingredientesConsolidados = [];
-                    tbody.innerHTML = '<tr><td colspan="4">No se pudieron consolidar los ingredientes.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6">No se pudieron consolidar los ingredientes.</td></tr>';
                     await window.__TAURI__.dialog.message(
                         'No se pudo consolidar los ingredientes: ' + error,
                         { title: 'Error', kind: 'error' }
                     );
                 }
             } else {
-                tbody.innerHTML = '<tr><td colspan="4">No se obtuvieron datos.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6">No se obtuvieron datos.</td></tr>';
             }
         });
     }
@@ -675,6 +764,176 @@ document.addEventListener('scroll', cerrarMenuContextual, true);
 window.addEventListener('blur', cerrarMenuContextual);
 window.addEventListener('resize', cerrarMenuContextual);
 
+// --- Columna Código: selector del diccionario o entrada manual ---
+const CODIGO_MANUAL = '__MANUAL__';
+
+// Sincroniza el código en el estado global (por nombre + unidad)
+function sincronizarCodigoSeleccionado(item, valor) {
+    item.codigo_seleccionado = valor;
+
+    const original = ingredientesConsolidados.find(
+        ing => ing.nombre === item.nombre && ing.unidad === item.unidad
+    );
+    if (original) {
+        original.codigo_seleccionado = valor;
+        if (item.opciones_codigo) original.opciones_codigo = item.opciones_codigo;
+    }
+}
+
+// Entrada manual: misma apariencia que el selector
+function crearInputCodigo(item, opciones, td) {
+    const contenedor = document.createElement('div');
+    contenedor.className = 'codigo-manual-wrapper';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'input-codigo-manual';
+    input.placeholder = 'Escribir código...';
+    input.value = item.codigo_seleccionado || '';
+    input.addEventListener('input', () => sincronizarCodigoSeleccionado(item, input.value));
+
+    contenedor.appendChild(input);
+
+    // Si venía de una lista de opciones, permite volver al desplegable
+    if (opciones.length > 0) {
+        const volver = document.createElement('button');
+        volver.type = 'button';
+        volver.className = 'btn-codigo-opciones';
+        volver.title = 'Volver a las opciones del diccionario';
+        volver.setAttribute('aria-label', 'Volver a las opciones del diccionario');
+        volver.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>';
+        volver.addEventListener('click', () => {
+            // Si el código manual no existe en el diccionario, se limpia
+            const coincide = opciones.some(o => o.codigo === item.codigo_seleccionado);
+            if (!coincide) sincronizarCodigoSeleccionado(item, '');
+            pintarControlCodigo(td, item, opciones);
+        });
+        contenedor.appendChild(volver);
+    }
+
+    return contenedor;
+}
+
+// Selector nativo con overlay: cerrado muestra solo el código,
+// desplegado muestra el nombre completo de cada artículo.
+function crearSelectCodigo(item, opciones, td) {
+    const contenedor = document.createElement('div');
+    contenedor.className = 'code-select';
+
+    const etiqueta = document.createElement('span');
+    etiqueta.className = 'code-select-label';
+
+    const chevron = document.createElement('span');
+    chevron.className = 'code-select-chevron';
+    chevron.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', `Código para ${item.nombre}`);
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Elegir código...';
+    select.appendChild(placeholder);
+
+    opciones.forEach(opcion => {
+        const opt = document.createElement('option');
+        opt.value = opcion.codigo;
+        opt.dataset.nombre = opcion.descripcion;
+        opt.textContent = `${opcion.codigo} - ${opcion.descripcion}`;
+        select.appendChild(opt);
+    });
+
+    // Opción extra SIEMPRE al final
+    const manual = document.createElement('option');
+    manual.value = CODIGO_MANUAL;
+    manual.textContent = '✏️ Escribir manualmente...';
+    select.appendChild(manual);
+
+    const describirSeleccion = (codigo) => {
+        const opcion = opciones.find(o => o.codigo === codigo);
+        return opcion ? `${opcion.codigo} - ${opcion.descripcion}` : '';
+    };
+
+    const actualizarEtiqueta = () => {
+        const seleccionado = select.value;
+        etiqueta.textContent = seleccionado || 'Elegir código...';
+        contenedor.classList.toggle('is-empty', !seleccionado);
+        contenedor.title = describirSeleccion(seleccionado);
+    };
+
+    select.value = item.codigo_seleccionado || '';
+    actualizarEtiqueta();
+
+    select.addEventListener('change', () => {
+        // Cambio a entrada manual: se reemplaza el select por un input
+        if (select.value === CODIGO_MANUAL) {
+            sincronizarCodigoSeleccionado(item, '');
+            td.innerHTML = '';
+            td.appendChild(crearInputCodigo(item, opciones, td));
+
+            const input = td.querySelector('.input-codigo-manual');
+            if (input) input.focus();
+            return;
+        }
+
+        sincronizarCodigoSeleccionado(item, select.value);
+        actualizarEtiqueta();
+    });
+
+    contenedor.appendChild(etiqueta);
+    contenedor.appendChild(chevron);
+    contenedor.appendChild(select);
+    return contenedor;
+}
+
+// Decide qué control pintar: input manual o selector de códigos
+function pintarControlCodigo(td, item, opciones) {
+    td.innerHTML = '';
+
+    const codigo = item.codigo_seleccionado || '';
+    const coincide = opciones.some(o => o.codigo === codigo);
+
+    if (opciones.length === 0 || (codigo && !coincide)) {
+        td.appendChild(crearInputCodigo(item, opciones, td));
+    } else {
+        td.appendChild(crearSelectCodigo(item, opciones, td));
+    }
+}
+
+// Celda de código del diccionario maestro
+function crearCeldaCodigo(item) {
+    const td = document.createElement('td');
+    pintarControlCodigo(td, item, item.opciones_codigo || []);
+    return td;
+}
+
+// Quita los códigos asignados y refresca la columna de la tabla
+function limpiarCodigosTabla() {
+    ingredientesConsolidados.forEach(ing => {
+        ing.opciones_codigo = [];
+        ing.codigo_seleccionado = '';
+    });
+
+    const tbody = document.getElementById('tablaConsolidadaBody');
+    if (!tbody) return;
+
+    tbody.querySelectorAll('tr').forEach(fila => {
+        if (fila.children.length < 2) return;
+
+        const nombre = fila.querySelector('strong')?.textContent.trim();
+        const ingrediente = ingredientesConsolidados.find(ing => ing.nombre === nombre);
+
+        fila.children[1].replaceWith(
+            crearCeldaCodigo(ingrediente || {
+                nombre: nombre || '',
+                unidad: '',
+                opciones_codigo: [],
+                codigo_seleccionado: ''
+            })
+        );
+    });
+}
+
 function pintarTablaConsolidada(datos) {
     const tbody = document.getElementById('tablaConsolidadaBody');
     if (!tbody) return;
@@ -684,6 +943,7 @@ function pintarTablaConsolidada(datos) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td><strong>${item.nombre}</strong></td>
+            <td></td>
             <td>${item.unidad}</td>
             <td>${item.cantidad.toFixed(2)}</td>
             <td style="color:#999;">—</td>
@@ -691,6 +951,7 @@ function pintarTablaConsolidada(datos) {
                 <input type="text" class="input-comentario" placeholder="Escribe un comentario..." style="width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 4px; font-size: 12px;">
             </td>
         `;
+        tr.children[1].replaceWith(crearCeldaCodigo(item));
         tbody.appendChild(tr);
     });
 
@@ -705,6 +966,7 @@ function pintarTablaConsolidadaConTotal(datos) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td><strong>${item.nombre}</strong></td>
+            <td></td>
             <td>${item.unidad}</td>
             <td>${item.cantidad.toFixed(2)}</td>
             <td><strong style="color: #2563eb;">${item.cantidad_total.toFixed(2)}</strong></td>
@@ -712,6 +974,7 @@ function pintarTablaConsolidadaConTotal(datos) {
                 <input type="text" class="input-comentario" placeholder="Escribe un comentario..." style="width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 4px; font-size: 12px;">
             </td>
         `;
+        tr.children[1].replaceWith(crearCeldaCodigo(item));
         tbody.appendChild(tr);
     });
 

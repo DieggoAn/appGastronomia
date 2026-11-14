@@ -49,6 +49,19 @@
                     <!-- Los archivos se cargan dinámicamente desde main.js -->
                 </ul>
             </details>
+            <details>
+                <summary>
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                    Diccionario
+                </summary>
+                <div style="padding: 8px; display: flex; flex-direction: column; gap: 8px;">
+                    <button class="btn-add-file" id="btnAddDiccionario" type="button">
+                        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                        Agregar Diccionario
+                    </button>
+                    <ul class="dictionary-list" id="dictionaryList" aria-live="polite"></ul>
+                </div>
+            </details>
             <div class="sidebar-actions">
                 <button class="btn-secondary" type="button" id="btnProcesarSeleccionadas" title="Procesar hojas seleccionadas">
                     <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
@@ -72,10 +85,6 @@
                         <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
                     </svg>
                     <input type="text" id="tituloConsolidado" class="table-title-input" value="Consolidado de ingredientes" aria-label="Título de la tabla consolidada">
-                    <button class="btn-toolbar" type="button" id="btnDiccionario" title="Diccionario de ingredientes">
-                        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-                        <span>Diccionario</span>
-                    </button>
                     <button class="btn-toolbar" type="button" id="btnAutoColor" title="Asignar colores automáticamente">
                         <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.12a1.64 1.64 0 0 1 1.67-1.67h1.99c3.05 0 5.56-2.5 5.56-5.55C21.97 6.01 17.46 2 12 2z"/></svg>
                         <span>Auto-color</span>
@@ -85,6 +94,7 @@
                     <thead>
                         <tr>
                             <th>Ingrediente</th>
+                            <th>Código</th>
                             <th>Unidad</th>
                             <th>Cantidad</th>
                             <th>Cantidad Total</th>
@@ -92,7 +102,7 @@
                         </tr>
                     </thead>
                     <tbody id="tablaConsolidadaBody">
-                        <tr><td colspan="5" style="text-align:center; color:#888;">Haz clic en el nombre de una hoja para procesarla</td></tr>
+                        <tr><td colspan="6" style="text-align:center; color:#888;">Haz clic en el nombre de una hoja para procesarla</td></tr>
                     </tbody>
                 </table>
             </div>

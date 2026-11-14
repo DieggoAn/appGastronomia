@@ -872,6 +872,182 @@ body {
     color: #fff;
 }
 
+/* --- Diccionario maestro (panel izquierdo) --- */
+.dictionary-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.dictionary-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 11.5px;
+}
+
+.dictionary-item-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--accent);
+}
+
+.dictionary-item-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dictionary-delete {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-faint);
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease;
+}
+
+.dictionary-delete:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.dictionary-empty {
+    padding: 2px;
+    color: var(--text-faint);
+    font-size: 11px;
+    font-style: italic;
+}
+
+/* --- Selector de código: cerrado muestra solo el código --- */
+.code-select {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-width: 86px;
+    max-width: 100%;
+    padding: 3px 20px 3px 5px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 11.5px;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: border-color 0.12s ease;
+}
+
+.code-select:hover { border-color: var(--accent); }
+.code-select:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+
+.code-select-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.code-select.is-empty .code-select-label { color: var(--text-faint); }
+
+.code-select-chevron {
+    position: absolute;
+    right: 5px;
+    display: inline-flex;
+    width: 12px;
+    height: 12px;
+    color: var(--text-faint);
+    pointer-events: none;
+}
+.code-select-chevron svg { width: 12px; height: 12px; }
+
+/* Selector nativo invisible que abre la lista con los nombres completos */
+.code-select select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    opacity: 0;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11.5px;
+}
+
+/* --- Entrada manual de código --- */
+.codigo-manual-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 96px;
+    max-width: 100%;
+}
+
+.input-codigo-manual {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 3px 5px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11.5px;
+    line-height: 1.4;
+    transition: border-color 0.12s ease;
+}
+
+.input-codigo-manual::placeholder { color: var(--text-faint); }
+.input-codigo-manual:hover { border-color: var(--accent); }
+.input-codigo-manual:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+
+.btn-codigo-opciones {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-faint);
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease;
+}
+.btn-codigo-opciones:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+.btn-codigo-opciones svg { width: 12px; height: 12px; }
+
 /* Pantallas medianas: se prioriza el icono y el layout sigue en una sola fila */
 @media (max-width: 1100px) {
     .btn-toolbar span { display: none; }
