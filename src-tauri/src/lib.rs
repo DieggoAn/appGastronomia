@@ -5,6 +5,7 @@ mod secciones;
 mod recientes;
 mod excel;
 mod colores;
+mod vinculaciones;
 
 use tauri::Manager;
 
@@ -49,7 +50,9 @@ pub fn run() {
             colores::obtener_colores_filas,
             colores::guardar_colores_filas,
             colores::obtener_version_colores_filas,
-            colores::guardar_version_colores_filas
+            colores::guardar_version_colores_filas,
+            vinculaciones::obtener_vinculaciones,
+            vinculaciones::guardar_vinculaciones
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
