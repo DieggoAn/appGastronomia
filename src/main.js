@@ -38,6 +38,27 @@ window.addEventListener('DOMContentLoaded', () => {
         btnResumenColores.addEventListener('click', abrirResumenColores);
     }
 
+    // Filtro por color de la tabla (reemplaza al antiguo botón "Auto-color")
+    const btnFiltrarColor = document.getElementById('btnFiltrarColor');
+    if (btnFiltrarColor) {
+        btnFiltrarColor.addEventListener('click', abrirMenuFiltroColor);
+    }
+
+    // Cierre del menú de filtro: clic fuera, Escape, scroll, resize o blur
+    document.addEventListener('click', (evento) => {
+        if (!menuFiltroColor) return;
+        if (evento.target.closest && evento.target.closest('#colorFilterMenu, #btnFiltrarColor')) return;
+        cerrarMenuFiltroColor();
+    });
+    document.addEventListener('keydown', (evento) => {
+        if (evento.key === 'Escape' && menuFiltroColor) cerrarMenuFiltroColor();
+    });
+    document.addEventListener('scroll', () => {
+        if (menuFiltroColor) cerrarMenuFiltroColor();
+    }, true);
+    window.addEventListener('resize', cerrarMenuFiltroColor);
+    window.addEventListener('blur', cerrarMenuFiltroColor);
+
     // Vinculación de archivos Excel con los grupos guardados
     if (btnVincular) {
         btnVincular.addEventListener('click', abrirModalVincular);
@@ -1716,6 +1737,10 @@ function pintarFilaPorId(idFila, colorId) {
             fila.style.backgroundColor = color;
         }
     });
+
+    // Si hay un filtro activo, pintar o quitar color puede cambiar la
+    // visibilidad de esa fila: se recalcula sin repintar la tabla.
+    reaplicarFiltroColor();
 }
 
 // Actualiza estado en memoria + pinta de inmediato y persiste en background
@@ -1737,6 +1762,223 @@ function quitarColorFila(idFila) {
     coloresIngredientes.delete(idFila);
     pintarFilaPorId(idFila, null);
     persistirColoresFilas();
+}
+
+// --- FILTRO POR COLOR DE LA TABLA PRINCIPAL ---
+
+// Estado del filtro en memoria: id de color activo o null = "Mostrar todos".
+// No se persiste: al reiniciar la app la tabla vuelve a mostrarse completa.
+let filtroColorActivo = null;
+
+// Nodo del menú desplegable abierto (o null). Se ancla con position: fixed
+// porque .table-container tiene overflow: hidden y recortaría el dropdown.
+let menuFiltroColor = null;
+
+function nombreColor(colorId) {
+    if (!colorId) return '';
+    return colorId.charAt(0).toUpperCase() + colorId.slice(1);
+}
+
+// Filas de la tabla agrupadas por color asignado
+function contarFilasPorColor(tbody) {
+    const conteo = new Map(COLORES_INGREDIENTE.map(c => [c.id, 0]));
+    if (!tbody) return conteo;
+
+    tbody.querySelectorAll('tr[data-id-fila]').forEach(fila => {
+        const colorId = coloresIngredientes.get(fila.dataset.idFila);
+        if (colorId && conteo.has(colorId)) {
+            conteo.set(colorId, conteo.get(colorId) + 1);
+        }
+    });
+
+    return conteo;
+}
+
+// Oculta/muestra filas según el color activo. No repinta la tabla: solo
+// alterna el atributo `hidden`, así se conservan comentarios, códigos y
+// los valores ya calculados.
+function reaplicarFiltroColor() {
+    const tbody = document.getElementById('tablaConsolidadaBody');
+    if (!tbody) return;
+
+    const activo = filtroColorActivo;
+    let visibles = 0;
+
+    tbody.querySelectorAll('tr[data-id-fila]').forEach(fila => {
+        const coincide = !activo || coloresIngredientes.get(fila.dataset.idFila) === activo;
+        fila.hidden = !coincide;
+        if (coincide) visibles++;
+    });
+
+    actualizarAvisoFiltroVacio(tbody, activo, visibles);
+}
+
+// Cuando el filtro deja la tabla sin filas, se avisa en lugar de mostrar
+// un hueco en blanco (el aviso no es una fila de datos: no tiene data-id-fila).
+function actualizarAvisoFiltroVacio(tbody, activo, visibles) {
+    tbody.querySelectorAll('tr.fila-vacia-filtro').forEach(fila => fila.remove());
+
+    if (!activo || visibles > 0) return;
+
+    const tr = document.createElement('tr');
+    tr.className = 'fila-vacia-filtro';
+
+    const td = document.createElement('td');
+    td.colSpan = 6;
+    td.className = 'fila-vacia-filtro-celda';
+    td.textContent = `Ninguna fila tiene el color ${nombreColor(activo)}.`;
+
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+}
+
+// Refleja el estado del filtro en la barra de la tabla: texto + punto de color
+function actualizarIndicadorFiltroColor() {
+    const boton = document.getElementById('btnFiltrarColor');
+    const etiqueta = document.getElementById('filtrarColorLabel');
+    const punto = document.getElementById('filtrarColorDot');
+    if (!boton || !etiqueta) return;
+
+    const activo = filtroColorActivo;
+
+    boton.classList.toggle('is-active', Boolean(activo));
+    boton.title = activo
+        ? `Filtro activo: ${nombreColor(activo)}. Clic para cambiarlo o quitarlo.`
+        : 'Mostrar solo las filas de un color';
+    etiqueta.textContent = activo ? `Mostrando: ${nombreColor(activo)}` : 'Filtrar por color';
+
+    if (punto) {
+        punto.hidden = !activo;
+        punto.style.background = activo ? (COLORES_POR_ID.get(activo) || '') : '';
+    }
+}
+
+function aplicarFiltroColor(colorId) {
+    if (!COLORES_POR_ID.has(colorId)) return;
+
+    filtroColorActivo = colorId;
+    reaplicarFiltroColor();
+    actualizarIndicadorFiltroColor();
+
+    console.log(`[filtro-color] Filtro activo: ${colorId}`);
+}
+
+// "Mostrar todos": vuelve al orden y visibilidad originales (solo se quita
+// el `hidden`, las filas nunca se reordenan ni se eliminan del DOM).
+function quitarFiltroColor() {
+    filtroColorActivo = null;
+    reaplicarFiltroColor();
+    actualizarIndicadorFiltroColor();
+
+    console.log('[filtro-color] Filtro quitado: se muestran todas las filas.');
+}
+
+function abrirMenuFiltroColor() {
+    // Segundo clic sobre el botón: cierra (comportamiento toggle)
+    if (menuFiltroColor) {
+        cerrarMenuFiltroColor();
+        return;
+    }
+
+    const boton = document.getElementById('btnFiltrarColor');
+    if (!boton) return;
+
+    const menu = document.createElement('div');
+    menu.id = 'colorFilterMenu';
+    menu.className = 'color-filter-menu';
+    menu.setAttribute('role', 'menu');
+
+    const titulo = document.createElement('div');
+    titulo.className = 'color-filter-heading';
+    titulo.textContent = 'Mostrar solo filas de:';
+    menu.appendChild(titulo);
+
+    const conteo = contarFilasPorColor(document.getElementById('tablaConsolidadaBody'));
+
+    COLORES_INGREDIENTE.forEach(({ id, valor }) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'color-filter-item';
+        item.setAttribute('role', 'menuitemradio');
+        item.setAttribute('aria-checked', String(filtroColorActivo === id));
+        if (filtroColorActivo === id) item.classList.add('is-selected');
+
+        const swatch = document.createElement('span');
+        swatch.className = 'color-filter-swatch';
+        swatch.style.background = valor;
+
+        const nombre = document.createElement('span');
+        nombre.className = 'color-filter-name';
+        nombre.textContent = nombreColor(id);
+
+        const cantidad = document.createElement('span');
+        cantidad.className = 'color-filter-count';
+        cantidad.textContent = String(conteo.get(id) || 0);
+        cantidad.title = `${conteo.get(id) || 0} fila(s) con este color`;
+
+        item.append(swatch, nombre, cantidad);
+
+        item.addEventListener('click', () => {
+            aplicarFiltroColor(id);
+            cerrarMenuFiltroColor();
+        });
+
+        menu.appendChild(item);
+    });
+
+    const separador = document.createElement('div');
+    separador.className = 'color-filter-separator';
+    menu.appendChild(separador);
+
+    const limpiar = document.createElement('button');
+    limpiar.type = 'button';
+    limpiar.className = 'color-filter-clear';
+    limpiar.disabled = !filtroColorActivo;
+    limpiar.textContent = 'Mostrar todos';
+    limpiar.addEventListener('click', () => {
+        quitarFiltroColor();
+        cerrarMenuFiltroColor();
+    });
+
+    menu.appendChild(limpiar);
+    document.body.appendChild(menu);
+    menuFiltroColor = menu;
+
+    // Posicionado bajo el botón, alineado a su borde derecho y ajustado
+    // al viewport (igual que los menús contextuales de la app).
+    const margen = 6;
+    const rect = boton.getBoundingClientRect();
+    const ancho = menu.offsetWidth;
+    const alto = menu.offsetHeight;
+
+    const izquierda = Math.max(
+        margen,
+        Math.min(rect.right - ancho, window.innerWidth - ancho - margen)
+    );
+
+    let arriba = rect.bottom + 6;
+    if (arriba + alto > window.innerHeight - margen) {
+        arriba = Math.max(margen, rect.top - alto - 6);
+    }
+
+    menu.style.left = `${izquierda}px`;
+    menu.style.top = `${arriba}px`;
+
+    boton.setAttribute('aria-expanded', 'true');
+    boton.classList.add('is-open');
+}
+
+function cerrarMenuFiltroColor() {
+    if (menuFiltroColor) {
+        menuFiltroColor.remove();
+        menuFiltroColor = null;
+    }
+
+    const boton = document.getElementById('btnFiltrarColor');
+    if (boton) {
+        boton.setAttribute('aria-expanded', 'false');
+        boton.classList.remove('is-open');
+    }
 }
 
 // Lee los colores persistidos al iniciar la app.
@@ -1901,7 +2143,10 @@ function limpiarColoresHuerfanos(datos) {
 // unidad), intenta recuperarla por nombre cuando no hay ambigüedad.
 function aplicarColoresGuardados(tbody) {
     const filas = Array.from(tbody.querySelectorAll('tr[data-id-fila]'));
-    if (filas.length === 0) return;
+    if (filas.length === 0) {
+        reaplicarFiltroColor();
+        return;
+    }
 
     // Índice de claves persistidas por nombre
     const guardadosPorNombre = new Map();
@@ -1965,6 +2210,9 @@ function aplicarColoresGuardados(tbody) {
         `[colores] Restaurados ${aplicadas}/${filas.length} colores ` +
         `(mapa: ${coloresIngredientes.size}).`
     );
+
+    // Tras repintar la tabla se vuelve a aplicar el filtro activo, si lo hay
+    reaplicarFiltroColor();
 }
 
 // Si la carga inicial termina después de pintar, se migra (si hacía falta)

@@ -272,6 +272,121 @@ body {
 .btn-toolbar .icon { width: 14px; height: 14px; color: var(--text-faint); }
 .btn-toolbar:hover { background: var(--hover); border-color: var(--border); color: var(--text); }
 .btn-toolbar:hover .icon { color: var(--accent); }
+
+/* Botón "Filtrar por color": estado abierto y filtro activo */
+.btn-toolbar.is-open,
+.btn-toolbar.is-active {
+    background: var(--accent-soft);
+    border-color: var(--accent-soft);
+    color: var(--accent);
+}
+.btn-toolbar.is-open .icon,
+.btn-toolbar.is-active .icon { color: var(--accent); }
+
+/* Punto con el color activo dentro del botón */
+.filter-color-dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    flex-shrink: 0;
+}
+/* El display de arriba ganaría al [hidden] del navegador: se anula explícitamente */
+.filter-color-dot[hidden] { display: none; }
+
+/* Dropdown del filtro. Es position: fixed porque .table-container tiene
+   overflow: hidden y recortaría un menú absoluto dentro de la cabecera. */
+.color-filter-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 200px;
+    padding: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    transform-origin: top right;
+    animation: contextMenuIn 0.12s ease-out;
+}
+.color-filter-heading {
+    padding: 4px 8px 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.color-filter-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.color-filter-item:hover { background: var(--hover); }
+.color-filter-item.is-selected {
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+.color-filter-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(0, 0, 0, 0.14);
+    flex-shrink: 0;
+}
+.color-filter-name { flex: 1; }
+.color-filter-count {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.color-filter-separator {
+    height: 1px;
+    margin: 4px 2px;
+    background: var(--border);
+}
+.color-filter-clear {
+    width: 100%;
+    padding: 6px 8px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.color-filter-clear:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.color-filter-clear:disabled { opacity: 0.45; cursor: default; }
+
+/* El atributo [hidden] debe ganarle al display de tabla de las filas */
+.data-table tbody tr[hidden] { display: none; }
+
+/* Aviso cuando el filtro activo no deja ninguna fila visible */
+.fila-vacia-filtro-celda {
+    padding: 18px 10px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+}
 .data-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .data-table th {
     background: var(--bg);
@@ -1471,9 +1586,10 @@ body {
     color: var(--text-muted);
 }
 
-/* Pantallas medianas: se prioriza el icono y el layout sigue en una sola fila */
+/* Pantallas medianas: se prioriza el icono y el layout sigue en una sola fila.
+   El punto del filtro se conserva porque es el único indicador del color activo. */
 @media (max-width: 1100px) {
-    .btn-toolbar span { display: none; }
+    .btn-toolbar span:not(.filter-color-dot) { display: none; }
     .btn-toolbar { padding: 4px 6px; }
 }
 @media (max-width: 900px) {
