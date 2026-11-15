@@ -19,7 +19,56 @@ window.addEventListener('DOMContentLoaded', () => {
     const btnProcesarSeleccionadas = document.getElementById('btnProcesarSeleccionadas');
     const btnLimpiarSeleccion = document.getElementById('btnLimpiarSeleccion');
     const btnCalcularTotal = document.getElementById('btnCalcularTotal');
+    const btnResumenColores = document.getElementById('btnResumenColores');
     const inputTituloConsolidado = document.getElementById('tituloConsolidado');
+
+    // Carga inicial de los colores persistidos (no bloquea el arranque)
+    coloresCargadosPromise = cargarColoresFilas();
+
+    // Resumen visual de colores aplicados (solo lectura)
+    if (btnResumenColores) {
+        btnResumenColores.addEventListener('click', abrirResumenColores);
+    }
+
+    // Opción B: volcar los colores al store antes de permitir el cierre
+    if (window.__TAURI__?.window?.getCurrentWindow) {
+        const ventanaActual = window.__TAURI__.window.getCurrentWindow();
+        let cierreEnCurso = false;
+        let permitirCierre = false;
+
+        ventanaActual.onCloseRequested(async (evento) => {
+            console.log('[colores] onCloseRequested recibido.');
+            if (permitirCierre) return; // deja pasar el cierre que provocamos abajo
+
+            evento.preventDefault();
+
+            if (cierreEnCurso) return; // ya se está guardando
+            cierreEnCurso = true;
+
+            // No bloqueamos el cierre más de ~1.5s aunque el store no responda;
+            // los guardados inmediatos ya cubren el caso normal.
+            await Promise.race([
+                flushColoresAlCerrar(),
+                new Promise(resolve => setTimeout(resolve, 1500))
+            ]);
+
+            permitirCierre = true;
+
+            try {
+                await ventanaActual.close();
+            } catch (error) {
+                console.error('No se pudo cerrar la ventana tras guardar los colores:', error);
+                permitirCierre = false;
+                cierreEnCurso = false;
+            }
+        }).then(() => {
+            console.log('[colores] onCloseRequested enganchado correctamente.');
+        }).catch((error) => {
+            console.error('No se pudo enganchar onCloseRequested:', error);
+        });
+    } else {
+        console.warn('[colores] window.__TAURI__.window no disponible; sin flush al cerrar.');
+    }
 
     if (inputTituloConsolidado) {
         inputTituloConsolidado.value = tituloConsolidado;
@@ -43,13 +92,15 @@ window.addEventListener('DOMContentLoaded', () => {
     if (tablaConsolidadaBody) {
         tablaConsolidadaBody.addEventListener('contextmenu', (evento) => {
             const fila = evento.target.closest('tr');
-            const celdaNombre = fila ? fila.querySelector('strong') : null;
-            if (!celdaNombre) return; // filas de estado sin ingrediente
+            if (!fila || !fila.querySelector('strong')) return; // filas de estado sin ingrediente
+
+            const idFila = fila.dataset.idFila;
+            if (!idFila) return;
 
             evento.preventDefault();
             evento.stopPropagation();
 
-            abrirMenuColores(evento.clientX, evento.clientY, celdaNombre.textContent.trim());
+            abrirMenuColores(evento.clientX, evento.clientY, idFila, fila);
         });
     }
 
@@ -110,6 +161,13 @@ window.addEventListener('DOMContentLoaded', () => {
 
                 diccionarioMaestro = await invoke('leer_diccionario', { ruta });
 
+                // Recordar la ruta para restaurar el diccionario al iniciar
+                try {
+                    await invoke('guardar_ruta_diccionario', { ruta });
+                } catch (error) {
+                    console.warn('No se pudo guardar la ruta del diccionario:', error);
+                }
+
                 pintarDiccionarioCargado(ruta, diccionarioMaestro.length);
 
                 await window.__TAURI__.dialog.message(
@@ -153,6 +211,11 @@ window.addEventListener('DOMContentLoaded', () => {
             diccionarioMaestro = [];
             pintarDiccionarioVacio();
             limpiarCodigosTabla();
+
+            // Olvidar la ruta persistida para no restaurarla al reiniciar
+            invoke('guardar_ruta_diccionario', { ruta: '' }).catch((error) => {
+                console.warn('No se pudo borrar la ruta del diccionario:', error);
+            });
         });
 
         li.appendChild(icono);
@@ -167,6 +230,28 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     pintarDiccionarioVacio();
+
+    // --- Restaurar el diccionario guardado en la sesión anterior ---
+    (async () => {
+        try {
+            const rutaGuardada = await invoke('obtener_ruta_diccionario');
+            if (!rutaGuardada) return;
+
+            try {
+                diccionarioMaestro = await invoke('leer_diccionario', { ruta: rutaGuardada });
+                pintarDiccionarioCargado(rutaGuardada, diccionarioMaestro.length);
+                console.info(`Diccionario restaurado: ${rutaGuardada} (${diccionarioMaestro.length} artículos).`);
+            } catch (error) {
+                // Archivo ilegible o eliminado: se limpia el estado sin bloquear la app
+                diccionarioMaestro = [];
+                pintarDiccionarioVacio();
+                console.warn('No se pudo restaurar el diccionario guardado:', error);
+            }
+        } catch (error) {
+            // Sin preferencia guardada o store no disponible: se ignora
+            console.warn('No se pudo leer la ruta del diccionario guardado:', error);
+        }
+    })();
 
     // --- NUEVO: Procesar todas las hojas seleccionadas ---
     if (btnProcesarSeleccionadas) {
@@ -577,12 +662,82 @@ async function cargarArchivosRecientes() {
 // --- MENÚ CONTEXTUAL GENÉRICO ---
 
 const COLORES_INGREDIENTE = [
-    '#f8d7da', '#ffe8cc', '#fff3bf', '#d3f9d8',
-    '#c5f6fa', '#d0ebff', '#e5dbff', '#f3d9fa'
+    { id: 'rojo', valor: '#f8d7da' },
+    { id: 'naranja', valor: '#ffe8cc' },
+    { id: 'amarillo', valor: '#fff3bf' },
+    { id: 'verde', valor: '#d3f9d8' },
+    { id: 'turquesa', valor: '#c5f6fa' },
+    { id: 'azul', valor: '#d0ebff' },
+    { id: 'violeta', valor: '#e5dbff' },
+    { id: 'rosa', valor: '#f3d9fa' }
 ];
 
-// Color elegido por ingrediente (se conserva entre repintados de la tabla)
+// El id de color es lo que se persiste; el hex solo es presentación
+const COLORES_POR_ID = new Map(COLORES_INGREDIENTE.map(c => [c.id, c.valor]));
+
+// Versión actual del esquema de claves de colores. Ver migrarColoresLegacy().
+// v1: clave = solo nombre normalizado (o "nombre|unidad" en versiones intermedias).
+// v2: clave = "nombre_normalizado::unidad_normalizada".
+const SCHEMA_VERSION_COLORES = 2;
+
+// Separador de la pk compuesta. Se elige "::" porque:
+//  - no aparece en nombres de ingredientes ni unidades habituales,
+//  - es visible al depurar y distinto del "|" que usa la clave interna de
+//    consolidación de Rust, lo que permite reconocer formatos viejos.
+const SEPARADOR_PK_COLOR = '::';
+
+// Color elegido por fila (pkColorFila -> idColor). Fuente de verdad en runtime.
 const coloresIngredientes = new Map();
+
+// Entradas leídas con formato viejo (solo nombre, o "nombre|unidad").
+// No se aplican hasta conocer las filas actuales: ver migrarColoresLegacy().
+const coloresPendientesMigracion = new Map();
+
+// Versión leída del store (0 = sin versión / esquema viejo).
+let versionColoresCargada = 0;
+
+// Promesa de la carga inicial desde el store
+let coloresCargadosPromise = null;
+
+// Banderas para no migrar ni volcar datos antes de saber qué había en disco.
+let coloresCargados = false;
+let cargaColoresFallida = false;
+
+// Cola de escrituras para que los guardados no se pisen entre sí
+let persistenciaColoresCola = Promise.resolve();
+
+// Nombre normalizado de la fila. Rust lo expone en `clave_ingrediente`
+// para no duplicar aquí la normalización de acentos/espacios.
+function claveNombreIngrediente(item) {
+    if (item?.clave_ingrediente) return item.clave_ingrediente;
+
+    // Respaldo defensivo: si la fila trae la clave de consolidación
+    // ("nombre_normalizado|unidad"), recuperamos solo el nombre.
+    if (item?.clave && item.clave.includes('|')) {
+        return item.clave.slice(0, item.clave.indexOf('|'));
+    }
+
+    return String(item?.nombre || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+}
+
+function normalizarUnidadMedida(unidad) {
+    return String(unidad || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .replace(/[.,;:]+$/, '')
+        .toLowerCase();
+}
+
+// pk estable y compuesta de una fila: nombre normalizado + unidad normalizada.
+// Ejemplo: "harina::kg" y "harina::g" son filas distintas.
+function pkColorFila(fila) {
+    const nombre = claveNombreIngrediente(fila);
+    const unidad = normalizarUnidadMedida(fila?.unidad);
+    return `${nombre}${SEPARADOR_PK_COLOR}${unidad}`;
+}
 
 // Cierra cualquier menú contextual abierto y limpia el marcado del origen
 function cerrarMenuContextual() {
@@ -650,10 +805,7 @@ function abrirMenuContextual(x, y, opciones, targetElement = null) {
 }
 
 // Menú de colores de una fila de ingrediente: grid de 8 swatches + "Quitar color"
-function abrirMenuColores(x, y, nombreIngrediente) {
-    const filaOrigen = Array.from(document.querySelectorAll('#tablaConsolidadaBody tr'))
-        .find(fila => fila.querySelector('strong')?.textContent.trim() === nombreIngrediente) || null;
-
+function abrirMenuColores(x, y, idFila, filaOrigen = null) {
     const menu = document.createElement('div');
     menu.id = 'menuColores';
     menu.classList.add('context-menu-colores');
@@ -661,17 +813,17 @@ function abrirMenuColores(x, y, nombreIngrediente) {
     const grid = document.createElement('div');
     grid.className = 'color-grid';
 
-    COLORES_INGREDIENTE.forEach(color => {
+    COLORES_INGREDIENTE.forEach(({ id, valor }) => {
         const swatch = document.createElement('button');
         swatch.type = 'button';
         swatch.className = 'color-swatch';
-        swatch.style.background = color;
-        swatch.title = color;
-        swatch.setAttribute('aria-label', `Color ${color}`);
+        swatch.style.background = valor;
+        swatch.title = id;
+        swatch.setAttribute('aria-label', `Color ${id}`);
 
         swatch.addEventListener('click', () => {
             cerrarMenuContextual();
-            aplicarColorIngrediente(nombreIngrediente, color);
+            guardarColorFila(idFila, id);
         });
 
         grid.appendChild(swatch);
@@ -686,7 +838,7 @@ function abrirMenuColores(x, y, nombreIngrediente) {
 
     quitar.addEventListener('click', () => {
         cerrarMenuContextual();
-        aplicarColorIngrediente(nombreIngrediente, null);
+        quitarColorFila(idFila);
     });
 
     menu.appendChild(quitar);
@@ -694,32 +846,587 @@ function abrirMenuColores(x, y, nombreIngrediente) {
     mostrarMenuContextual(menu, x, y, filaOrigen);
 }
 
-function aplicarColorIngrediente(nombre, color) {
-    if (color) {
-        coloresIngredientes.set(nombre, color);
-    } else {
-        coloresIngredientes.delete(nombre);
-    }
+// Persiste todo el mapa en el store sin bloquear la UI.
+// Se encola para que varias escrituras seguidas no se pisen y para
+// esperar a que termine la carga inicial antes de sobrescribir.
+function persistirColoresFilas() {
+    const guardar = () => {
+        const colores = Object.fromEntries(coloresIngredientes);
+        const total = Object.keys(colores).length;
+
+        console.log(`[colores] Persistiendo ${total} color(es) en el store...`);
+
+        return invoke('guardar_colores_filas', { colores })
+            .then(() => console.log(`[colores] Store OK: ${total} color(es) guardados.`));
+    };
+
+    persistenciaColoresCola = persistenciaColoresCola
+        .then(() => coloresCargadosPromise || Promise.resolve())
+        .then(guardar)
+        .catch((error) => {
+            console.error('No se pudieron guardar los colores de las filas:', error);
+        });
+}
+
+// Marca en el store la versión del esquema ya aplicada (idempotencia).
+function persistirVersionColores() {
+    const version = versionColoresCargada || SCHEMA_VERSION_COLORES;
+
+    persistenciaColoresCola = persistenciaColoresCola
+        .then(() => coloresCargadosPromise || Promise.resolve())
+        .then(() => invoke('guardar_version_colores_filas', { version }))
+        .catch((error) => {
+            console.error('No se pudo guardar la versión del esquema de colores:', error);
+        });
+}
+
+// Aplica el color a todas las filas con ese id (la tabla puede estar duplicada)
+function pintarFilaPorId(idFila, colorId) {
+    const color = colorId ? (COLORES_POR_ID.get(colorId) || '') : '';
 
     document.querySelectorAll('#tablaConsolidadaBody tr').forEach(fila => {
-        const celdaNombre = fila.querySelector('strong');
-        if (celdaNombre && celdaNombre.textContent.trim() === nombre) {
-            fila.style.backgroundColor = color || '';
+        if (fila.dataset.idFila === idFila) {
+            fila.style.backgroundColor = color;
         }
     });
 }
 
-// Reaplica los colores guardados después de repintar la tabla
-function aplicarColoresGuardados(tbody) {
-    if (coloresIngredientes.size === 0) return;
+// Actualiza estado en memoria + pinta de inmediato y persiste en background
+function guardarColorFila(idFila, colorId) {
+    if (!idFila || !COLORES_POR_ID.has(colorId)) return;
 
-    tbody.querySelectorAll('tr').forEach(fila => {
-        const celdaNombre = fila.querySelector('strong');
-        if (!celdaNombre) return;
+    console.log(`[colores] guardarColorFila: "${idFila}" -> ${colorId}`);
 
-        const color = coloresIngredientes.get(celdaNombre.textContent.trim());
-        if (color) fila.style.backgroundColor = color;
+    coloresIngredientes.set(idFila, colorId);
+    pintarFilaPorId(idFila, colorId);
+    persistirColoresFilas();
+}
+
+function quitarColorFila(idFila) {
+    if (!idFila) return;
+
+    console.log(`[colores] quitarColorFila: "${idFila}"`);
+
+    coloresIngredientes.delete(idFila);
+    pintarFilaPorId(idFila, null);
+    persistirColoresFilas();
+}
+
+// Lee los colores persistidos al iniciar la app.
+// Las claves con formato viejo quedan pendientes hasta que la tabla exista.
+async function cargarColoresFilas() {
+    try {
+        const guardados = await invoke('obtener_colores_filas');
+        const claves = Object.keys(guardados || {});
+        console.log(`[colores] Store leído: ${claves.length} clave(s).`, claves);
+
+        // La versión es secundaria: si falla, la migración se apoya en el
+        // formato de las claves y sigue siendo segura.
+        try {
+            const version = await invoke('obtener_version_colores_filas');
+            versionColoresCargada = Number(version) || 0;
+            console.log(`[colores] Versión del esquema en store: ${versionColoresCargada}`);
+        } catch (error) {
+            console.error('No se pudo leer la versión del esquema de colores:', error);
+            versionColoresCargada = 0;
+        }
+
+        Object.entries(guardados || {}).forEach(([clave, colorId]) => {
+            // Ignora ids de color desconocidos (paleta cambiada)
+            if (!COLORES_POR_ID.has(colorId)) {
+                console.warn(`[colores] Color desconocido "${colorId}" para "${clave}"; se ignora.`);
+                return;
+            }
+
+            if (clave.includes(SEPARADOR_PK_COLOR)) {
+                coloresIngredientes.set(clave, colorId);       // esquema actual
+            } else {
+                coloresPendientesMigracion.set(clave, colorId); // esquema viejo
+            }
+        });
+
+        console.log(
+            `[colores] En memoria: ${coloresIngredientes.size} actuales, ` +
+            `${coloresPendientesMigracion.size} pendientes de migrar.`
+        );
+
+        // Sin entradas viejas: solo nos aseguramos de marcar el esquema actual.
+        if (coloresPendientesMigracion.size === 0
+            && versionColoresCargada < SCHEMA_VERSION_COLORES) {
+            versionColoresCargada = SCHEMA_VERSION_COLORES;
+            persistirVersionColores();
+        }
+
+        // Si la tabla ya está pintada, aplicamos los colores ahora mismo.
+        const tbody = document.getElementById('tablaConsolidadaBody');
+        if (tbody && tbody.querySelector('tr[data-id-fila]')) {
+            aplicarColoresGuardados(tbody);
+        }
+    } catch (error) {
+        cargaColoresFallida = true;
+        console.error('No se pudieron cargar los colores de las filas:', error);
+    } finally {
+        coloresCargados = true;
+    }
+
+    return coloresIngredientes;
+}
+
+// Migra las claves persistidas con esquemas viejos al actual.
+// Heurística:
+//  - "nombre|unidad" (formato intermedio): se convierte a "nombre::unidad"
+//    y solo se aplica si esa fila existe hoy.
+//  - "nombre" (v1 real): si hoy hay UNA sola fila con ese nombre, hereda el
+//    color; si hay VARIAS (mismo nombre, distinta unidad) es ambiguo y se
+//    descarta. TODO: requeriría decisión manual si se quisiera conservar.
+// Es idempotente: al terminar se marca SCHEMA_VERSION_COLORES en el store.
+function migrarColoresLegacy(datos) {
+    // No migrar hasta saber qué había en disco (evita marcar v2 prematuramente)
+    if (!coloresCargados || !datos || datos.length === 0) return;
+
+    if (coloresPendientesMigracion.size === 0) {
+        if (versionColoresCargada < SCHEMA_VERSION_COLORES) {
+            versionColoresCargada = SCHEMA_VERSION_COLORES;
+            persistirVersionColores();
+        }
+        return;
+    }
+
+    const filasPorNombre = new Map();
+    const pksValidas = new Set();
+
+    datos.forEach(item => {
+        const nombre = claveNombreIngrediente(item);
+        if (!filasPorNombre.has(nombre)) filasPorNombre.set(nombre, []);
+        filasPorNombre.get(nombre).push(item);
+        pksValidas.add(pkColorFila(item));
     });
+
+    coloresPendientesMigracion.forEach((colorId, claveVieja) => {
+        const candidatos = filasPorNombre.get(claveVieja) || [];
+
+        // Caso v1: solo nombre y hoy existe una única fila con ese nombre.
+        // Si ya hay una entrada con la pk nueva, esa gana.
+        if (candidatos.length === 1) {
+            const pk = pkColorFila(candidatos[0]);
+            if (!coloresIngredientes.has(pk)) {
+                coloresIngredientes.set(pk, colorId);
+            }
+            return;
+        }
+
+        // Varias filas con el mismo nombre: no hay forma de saber la unidad.
+        // Se descarta la entrada vieja para no pintar la fila equivocada.
+        if (candidatos.length > 1) return;
+
+        // Caso intermedio: "nombre|unidad" -> "nombre::unidad"
+        if (claveVieja.includes('|')) {
+            const corte = claveVieja.indexOf('|');
+            const unidadVieja = normalizarUnidadMedida(claveVieja.slice(corte + 1));
+            const pk = `${claveVieja.slice(0, corte)}${SEPARADOR_PK_COLOR}${unidadVieja}`;
+
+            if (pksValidas.has(pk) && !coloresIngredientes.has(pk)) {
+                coloresIngredientes.set(pk, colorId);
+            }
+        }
+    });
+
+    coloresPendientesMigracion.clear();
+    versionColoresCargada = SCHEMA_VERSION_COLORES;
+
+    // Primero el mapa y después la versión: si algo falla, se reintenta
+    // la migración en el próximo arranque.
+    persistirColoresFilas();
+    persistirVersionColores();
+}
+
+// Elimina colores de ingredientes que ya no existen en la tabla.
+// IMPORTANTE: no se invoca automáticamente. La tabla consolidada puede ser
+// un subconjunto de los archivos del usuario (un grupo, una selección), así
+// que borrar por "nombre ausente" destruiría colores de otras tablas y se
+// percibiría como un reinicio. Se conserva como utilidad de mantenimiento
+// manual y solo elimina por NOMBRE ausente (no por unidad), para que una
+// diferencia de formato en la unidad ("Litro" vs "Lt") no borre datos.
+function limpiarColoresHuerfanos(datos) {
+    if (!coloresCargados || !Array.isArray(datos) || datos.length === 0) return;
+
+    const nombresValidos = new Set(datos.map(claveNombreIngrediente));
+    let eliminadas = 0;
+
+    coloresIngredientes.forEach((_, clave) => {
+        const corte = clave.lastIndexOf(SEPARADOR_PK_COLOR);
+        const nombre = corte >= 0 ? clave.slice(0, corte) : clave;
+
+        if (!nombresValidos.has(nombre)) {
+            coloresIngredientes.delete(clave);
+            eliminadas++;
+        }
+    });
+
+    if (eliminadas > 0) {
+        console.log(`[colores] Huérfanos eliminados: ${eliminadas}`);
+        persistirColoresFilas();
+    }
+}
+
+// Reaplica los colores guardados después de repintar la tabla.
+// Si una clave no coincide exactamente (p. ej. cambió el formato de la
+// unidad), intenta recuperarla por nombre cuando no hay ambigüedad.
+function aplicarColoresGuardados(tbody) {
+    const filas = Array.from(tbody.querySelectorAll('tr[data-id-fila]'));
+    if (filas.length === 0) return;
+
+    // Índice de claves persistidas por nombre
+    const guardadosPorNombre = new Map();
+    coloresIngredientes.forEach((colorId, clave) => {
+        const corte = clave.lastIndexOf(SEPARADOR_PK_COLOR);
+        const nombre = corte >= 0 ? clave.slice(0, corte) : clave;
+        if (!guardadosPorNombre.has(nombre)) guardadosPorNombre.set(nombre, []);
+        guardadosPorNombre.get(nombre).push({ clave, colorId });
+    });
+
+    // Filas de la tabla agrupadas por nombre
+    const filasPorNombre = new Map();
+    filas.forEach(fila => {
+        const idFila = fila.dataset.idFila;
+        const corte = idFila.lastIndexOf(SEPARADOR_PK_COLOR);
+        const nombre = corte >= 0 ? idFila.slice(0, corte) : idFila;
+        if (!filasPorNombre.has(nombre)) filasPorNombre.set(nombre, []);
+        filasPorNombre.get(nombre).push(fila);
+    });
+
+    let aplicadas = 0;
+    let reasignadas = 0;
+
+    filas.forEach(fila => {
+        const idFila = fila.dataset.idFila;
+        let colorId = coloresIngredientes.get(idFila);
+
+        if (!colorId) {
+            const corte = idFila.lastIndexOf(SEPARADOR_PK_COLOR);
+            const nombre = corte >= 0 ? idFila.slice(0, corte) : idFila;
+            const entradas = guardadosPorNombre.get(nombre) || [];
+            const filasMismoNombre = filasPorNombre.get(nombre) || [];
+
+            // Recuperación segura: solo si hay una fila y una entrada
+            if (entradas.length === 1 && filasMismoNombre.length === 1) {
+                const entrada = entradas[0];
+                colorId = entrada.colorId;
+
+                if (entrada.clave !== idFila) {
+                    coloresIngredientes.delete(entrada.clave);
+                    coloresIngredientes.set(idFila, colorId);
+                    reasignadas++;
+                    console.log(
+                        `[colores] Clave reasignada por unidad distinta: ` +
+                        `"${entrada.clave}" -> "${idFila}"`
+                    );
+                }
+            }
+        }
+
+        fila.style.backgroundColor = colorId ? (COLORES_POR_ID.get(colorId) || '') : '';
+        if (colorId) aplicadas++;
+    });
+
+    if (reasignadas > 0) {
+        console.log(`[colores] Reasignadas ${reasignadas} clave(s); persistiendo...`);
+        persistirColoresFilas();
+    }
+
+    console.log(
+        `[colores] Restaurados ${aplicadas}/${filas.length} colores ` +
+        `(mapa: ${coloresIngredientes.size}).`
+    );
+}
+
+// Si la carga inicial termina después de pintar, se migra (si hacía falta)
+// y se vuelve a aplicar sobre el tbody vigente.
+function asegurarColoresCargados(tbody, datos = []) {
+    if (!coloresCargadosPromise) return;
+
+    coloresCargadosPromise.then(() => {
+        if (!tbody.isConnected) return;
+        if (datos.length > 0) {
+            migrarColoresLegacy(datos);
+        }
+        aplicarColoresGuardados(tbody);
+
+        // Segundo intento tras el repintado del navegador, por si el DOM
+        // todavía estaba siendo actualizado cuando se aplicó el color.
+        requestAnimationFrame(() => {
+            if (tbody.isConnected) aplicarColoresGuardados(tbody);
+        });
+    });
+}
+
+// Opción B: vuelca el mapa completo al store antes de cerrar la app
+async function flushColoresAlCerrar() {
+    try {
+        // Evita sobrescribir con un mapa vacío si la carga inicial no terminó
+        if (coloresCargadosPromise) await coloresCargadosPromise;
+
+        // Si la lectura falló, no pisamos lo que haya en disco con un mapa vacío
+        if (cargaColoresFallida) {
+            console.error('Se omite el volcado de colores: falló la carga inicial.');
+            return;
+        }
+
+        // Espera cualquier guardado pendiente antes del volcado final
+        await persistenciaColoresCola;
+
+        const colores = Object.fromEntries(coloresIngredientes);
+
+        // Si aún no hubo tabla para migrar, conservamos las claves viejas
+        // para no perderlas al cerrar.
+        coloresPendientesMigracion.forEach((colorId, claveVieja) => {
+            if (!(claveVieja in colores)) colores[claveVieja] = colorId;
+        });
+
+        const version = coloresPendientesMigracion.size > 0
+            ? (versionColoresCargada || 1)  // todavía no migrado
+            : SCHEMA_VERSION_COLORES;
+
+        console.log(
+            `[colores] Flush al cerrar: ${Object.keys(colores).length} clave(s), ` +
+            `versión ${version}.`
+        );
+
+        await Promise.all([
+            invoke('guardar_colores_filas', { colores }),
+            invoke('guardar_version_colores_filas', { version })
+        ]);
+
+        console.log('[colores] Flush al cerrar completado.');
+    } catch (error) {
+        // Nunca debe bloquear el cierre de la ventana
+        console.error('No se pudieron volcar los colores al cerrar:', error);
+    }
+}
+
+// --- Modal de resumen de colores ---
+
+function cerrarResumenColores() {
+    const overlay = document.getElementById('modalResumenColores');
+    if (overlay) overlay.remove();
+
+    document.removeEventListener('keydown', cerrarResumenPorEscape);
+}
+
+function cerrarResumenPorEscape(evento) {
+    if (evento.key === 'Escape') {
+        evento.stopPropagation();
+        cerrarResumenColores();
+    }
+}
+
+// Agrupa las filas visibles por id de color.
+// Cada elemento incluye la pk para poder quitar el color desde el panel.
+function obtenerFilasPorColor() {
+    const filasPorColor = new Map();
+    COLORES_INGREDIENTE.forEach(color => filasPorColor.set(color.id, []));
+
+    document.querySelectorAll('#tablaConsolidadaBody tr').forEach(fila => {
+        const idFila = fila.dataset.idFila;
+        if (!idFila) return;
+
+        const colorId = coloresIngredientes.get(idFila);
+        if (!colorId || !filasPorColor.has(colorId)) return;
+
+        const nombre = fila.querySelector('strong')?.textContent.trim() || idFila;
+        const unidad = fila.children[2]?.textContent.trim() || '';
+        const etiqueta = unidad ? `${nombre} (${unidad})` : nombre;
+
+        filasPorColor.get(colorId).push({ idFila, etiqueta });
+    });
+
+    filasPorColor.forEach(filas => {
+        filas.sort((a, b) => a.etiqueta.localeCompare(b.etiqueta, 'es'));
+    });
+
+    return filasPorColor;
+}
+
+// Panel estilo "picker" de Django admin:
+// colores a la izquierda, filas afectadas a la derecha (con X para quitar).
+function abrirResumenColores() {
+    cerrarResumenColores();
+
+    const filasPorColor = obtenerFilasPorColor();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'colors-modal-overlay';
+    overlay.id = 'modalResumenColores';
+    overlay.addEventListener('click', (evento) => {
+        if (evento.target === overlay) cerrarResumenColores();
+    });
+
+    const modal = document.createElement('div');
+    modal.className = 'colors-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'coloresResumenTitulo');
+
+    // Cabecera
+    const header = document.createElement('div');
+    header.className = 'colors-modal-header';
+
+    const titulo = document.createElement('div');
+    titulo.className = 'colors-modal-title';
+    titulo.id = 'coloresResumenTitulo';
+    titulo.textContent = 'Resumen de colores';
+
+    const subtitulo = document.createElement('span');
+    subtitulo.className = 'colors-modal-subtitle';
+    subtitulo.textContent = 'Colores asignados';
+    titulo.appendChild(subtitulo);
+
+    const cerrarBtn = document.createElement('button');
+    cerrarBtn.type = 'button';
+    cerrarBtn.className = 'colors-modal-close';
+    cerrarBtn.title = 'Cerrar';
+    cerrarBtn.setAttribute('aria-label', 'Cerrar resumen de colores');
+    cerrarBtn.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+    cerrarBtn.addEventListener('click', cerrarResumenColores);
+
+    header.append(titulo, cerrarBtn);
+
+    // Cuerpo en dos columnas
+    const body = document.createElement('div');
+    body.className = 'colors-modal-body';
+
+    const colIzquierda = document.createElement('div');
+    colIzquierda.className = 'colors-picker-column';
+
+    const tituloIzquierda = document.createElement('div');
+    tituloIzquierda.className = 'colors-picker-heading';
+    tituloIzquierda.textContent = 'Colores';
+
+    const listaColores = document.createElement('ul');
+    listaColores.className = 'colors-picker-list';
+
+    const colDerecha = document.createElement('div');
+    colDerecha.className = 'colors-picker-column';
+
+    const tituloDerecha = document.createElement('div');
+    tituloDerecha.className = 'colors-picker-heading';
+
+    const listaFilas = document.createElement('ul');
+    listaFilas.className = 'colors-picker-rows';
+
+    // Botones de color (izquierda)
+    const botonesColor = new Map();
+
+    COLORES_INGREDIENTE.forEach(color => {
+        const filas = filasPorColor.get(color.id);
+
+        const li = document.createElement('li');
+
+        const boton = document.createElement('button');
+        boton.type = 'button';
+        boton.className = 'colors-picker-color';
+
+        const swatch = document.createElement('span');
+        swatch.className = 'colors-picker-swatch';
+        swatch.style.background = color.valor;
+
+        const nombreColor = document.createElement('span');
+        nombreColor.className = 'colors-picker-name';
+        nombreColor.textContent = color.id.charAt(0).toUpperCase() + color.id.slice(1);
+
+        const contador = document.createElement('span');
+        contador.className = 'colors-picker-count';
+        contador.textContent = String(filas.length);
+
+        boton.append(swatch, nombreColor, contador);
+
+        boton.addEventListener('click', () => {
+            colorSeleccionado = color.id;
+            pintarResumen();
+        });
+
+        li.appendChild(boton);
+        listaColores.appendChild(li);
+        botonesColor.set(color.id, boton);
+    });
+
+    // Selección inicial: primer color con filas asignadas
+    let colorSeleccionado = COLORES_INGREDIENTE
+        .map(color => color.id)
+        .find(id => filasPorColor.get(id).length > 0) || COLORES_INGREDIENTE[0].id;
+
+    function pintarResumen() {
+        // Se recalcula en cada refresco para reflejar los cambios del DOM/estado
+        const filasActuales = obtenerFilasPorColor();
+
+        botonesColor.forEach((boton, id) => {
+            const activo = id === colorSeleccionado;
+            boton.classList.toggle('active', activo);
+            boton.setAttribute('aria-pressed', activo ? 'true' : 'false');
+
+            const contador = boton.querySelector('.colors-picker-count');
+            if (contador) {
+                contador.textContent = String((filasActuales.get(id) || []).length);
+            }
+        });
+
+        const color = COLORES_INGREDIENTE.find(c => c.id === colorSeleccionado);
+        tituloDerecha.textContent = `Filas con color ${color.id}`;
+
+        listaFilas.innerHTML = '';
+
+        const filas = filasActuales.get(colorSeleccionado) || [];
+
+        if (filas.length === 0) {
+            const vacio = document.createElement('li');
+            vacio.className = 'colors-picker-empty';
+            vacio.textContent = 'Sin filas asignadas a este color.';
+            listaFilas.appendChild(vacio);
+            return;
+        }
+
+        filas.forEach(({ idFila, etiqueta }) => {
+            const li = document.createElement('li');
+            li.className = 'colors-picker-row';
+
+            const texto = document.createElement('span');
+            texto.className = 'colors-picker-row-label';
+            texto.textContent = etiqueta;
+
+            // Quitar color: sin confirmación (es reversible volviendo a pintar)
+            const quitar = document.createElement('button');
+            quitar.type = 'button';
+            quitar.className = 'colors-picker-remove';
+            quitar.title = 'Quitar color';
+            quitar.setAttribute('aria-label', `Quitar color a ${etiqueta}`);
+            quitar.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+            quitar.addEventListener('click', () => {
+                // Memoria + DOM de la tabla central + store
+                quitarColorFila(idFila);
+                // Refresca contadores y lista (la fila desaparece del panel)
+                pintarResumen();
+            });
+
+            li.append(texto, quitar);
+            listaFilas.appendChild(li);
+        });
+    }
+
+    // TODO: en una futura iteración, permitir reasignar colores en lote o
+    // filtrar la tabla desde este panel.
+
+    colIzquierda.append(tituloIzquierda, listaColores);
+    colDerecha.append(tituloDerecha, listaFilas);
+    body.append(colIzquierda, colDerecha);
+    modal.append(header, body);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    pintarResumen();
+
+    document.addEventListener('keydown', cerrarResumenPorEscape);
+    cerrarBtn.focus();
 }
 
 async function eliminarArchivoDeLista(detalles) {
@@ -941,6 +1648,7 @@ function pintarTablaConsolidada(datos) {
 
     datos.forEach(item => {
         const tr = document.createElement('tr');
+        tr.dataset.idFila = pkColorFila(item);
         tr.innerHTML = `
             <td><strong>${item.nombre}</strong></td>
             <td></td>
@@ -955,7 +1663,13 @@ function pintarTablaConsolidada(datos) {
         tbody.appendChild(tr);
     });
 
+    // Migra claves persistidas con esquemas viejos antes de aplicar colores.
+    // No se limpian huérfanos aquí: la tabla puede ser un subconjunto y se
+    // borrarían colores de otros ingredientes (ver limpiarColoresHuerfanos).
+    migrarColoresLegacy(datos);
+
     aplicarColoresGuardados(tbody);
+    asegurarColoresCargados(tbody, datos);
 }
 function pintarTablaConsolidadaConTotal(datos) {
     const tbody = document.getElementById('tablaConsolidadaBody');
@@ -964,6 +1678,7 @@ function pintarTablaConsolidadaConTotal(datos) {
 
     datos.forEach(item => {
         const tr = document.createElement('tr');
+        tr.dataset.idFila = pkColorFila(item);
         tr.innerHTML = `
             <td><strong>${item.nombre}</strong></td>
             <td></td>
@@ -978,5 +1693,7 @@ function pintarTablaConsolidadaConTotal(datos) {
         tbody.appendChild(tr);
     });
 
+    migrarColoresLegacy(datos);
     aplicarColoresGuardados(tbody);
+    asegurarColoresCargados(tbody, datos);
 }

@@ -1,6 +1,8 @@
 use calamine::{open_workbook, DataType, Reader, Xlsx};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
+use tauri_plugin_store::StoreExt;
 use crate::secciones::Seccion; // Para el comando calcular_total
 
 // --- 1. Structs (SIEMPRE al principio) ---
@@ -16,6 +18,14 @@ pub struct IngredienteConsolidado {
     pub nombre: String,
     pub unidad: String,
     pub cantidad: f32,
+    /// Clave de consolidación (nombre normalizado + unidad). La usa Rust
+    /// para agrupar filas equivalentes entre archivos.
+    #[serde(default)]
+    pub clave: String,
+    /// Solo el nombre normalizado (sin unidad). El frontend la combina con
+    /// la unidad para construir la pk de preferencias de UI (colores).
+    #[serde(default)]
+    pub clave_ingrediente: String,
     #[serde(default)]
     pub opciones_codigo: Vec<DiccionarioItem>,
     #[serde(default)]
@@ -28,6 +38,10 @@ pub struct IngredienteConTotal {
     pub unidad: String,
     pub cantidad: f32,
     pub cantidad_total: f32,
+    #[serde(default)]
+    pub clave: String,
+    #[serde(default)]
+    pub clave_ingrediente: String,
     #[serde(default)]
     pub opciones_codigo: Vec<DiccionarioItem>,
     #[serde(default)]
@@ -229,11 +243,15 @@ pub fn procesar_hojas_excel(
                 continue;
             }
 
-            let clave = format!("{}|{}", clave_ingrediente(&nombre), um.to_lowercase());
+            let clave_nombre = clave_ingrediente(&nombre);
+            let clave = format!("{}|{}", clave_nombre, um.to_lowercase());
+            let clave_fila = clave.clone();
             let entry = mapa.entry(clave).or_insert_with(|| IngredienteConsolidado {
                 nombre: nombre_visible(&nombre),
                 unidad: um.clone(),
                 cantidad: 0.0,
+                clave: clave_fila,
+                clave_ingrediente: clave_nombre,
                 opciones_codigo: Vec::new(),
                 codigo_seleccionado: String::new(),
             });
@@ -272,12 +290,16 @@ pub fn consolidar_entre_archivos(
         }
 
         let unidad = item.unidad.trim().to_string();
-        let clave = format!("{}|{}", clave_ingrediente(&nombre), unidad.to_lowercase());
+        let clave_nombre = clave_ingrediente(&nombre);
+        let clave = format!("{}|{}", clave_nombre, unidad.to_lowercase());
+        let clave_fila = clave.clone();
 
         let entry = mapa.entry(clave).or_insert_with(|| IngredienteConsolidado {
             nombre: nombre_visible(&nombre),
             unidad,
             cantidad: 0.0,
+            clave: clave_fila,
+            clave_ingrediente: clave_nombre,
             opciones_codigo: Vec::new(),
             codigo_seleccionado: String::new(),
         });
@@ -295,6 +317,59 @@ pub fn consolidar_entre_archivos(
     resultado.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
 
     Ok(resultado)
+}
+
+const STORE_DICCIONARIO: &str = "config.json";
+const CLAVE_RUTA_DICCIONARIO: &str = "ruta_diccionario";
+
+/// Guarda la ruta del diccionario maestro para restaurarla al iniciar.
+/// Si la ruta llega vacía, se elimina la preferencia guardada.
+#[tauri::command]
+pub fn guardar_ruta_diccionario(app: tauri::AppHandle, ruta: String) -> Result<(), String> {
+    let store = app
+        .store(STORE_DICCIONARIO)
+        .map_err(|e| e.to_string())?;
+
+    let ruta = ruta.trim().to_string();
+
+    if ruta.is_empty() {
+        store.delete(CLAVE_RUTA_DICCIONARIO);
+    } else {
+        store.set(
+            CLAVE_RUTA_DICCIONARIO,
+            serde_json::Value::String(ruta),
+        );
+    }
+
+    store.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Devuelve la ruta guardada del diccionario solo si el archivo sigue existiendo.
+/// Si ya no existe, limpia la preferencia en silencio y devuelve None.
+#[tauri::command]
+pub fn obtener_ruta_diccionario(
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    let store = app
+        .store(STORE_DICCIONARIO)
+        .map_err(|e| e.to_string())?;
+
+    let ruta = store
+        .get(CLAVE_RUTA_DICCIONARIO)
+        .and_then(|valor| valor.as_str().map(|texto| texto.to_string()))
+        .filter(|texto| !texto.trim().is_empty());
+
+    if let Some(ruta) = ruta {
+        if Path::new(&ruta).exists() {
+            return Ok(Some(ruta));
+        }
+
+        store.delete(CLAVE_RUTA_DICCIONARIO);
+        let _ = store.save();
+    }
+
+    Ok(None)
 }
 
 /// Lee el diccionario maestro: Columna A = código, Columna B = descripción.
@@ -398,6 +473,8 @@ pub fn calcular_total(
         unidad: ing.unidad,
         cantidad: ing.cantidad,
         cantidad_total: ing.cantidad * factor,
+        clave: ing.clave,
+        clave_ingrediente: ing.clave_ingrediente,
         opciones_codigo: ing.opciones_codigo,
         codigo_seleccionado: ing.codigo_seleccionado,
     })
