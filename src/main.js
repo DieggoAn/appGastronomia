@@ -75,36 +75,52 @@ window.addEventListener('DOMContentLoaded', () => {
         btnExportPdf.addEventListener('click', exportarPdf);
     }
 
-    // Opción B: volcar los colores al store antes de permitir el cierre
+    // Cierre de la ventana: volcado de colores y cierre forzado.
+    //
+    // `onCloseRequested` de Tauri impide el cierre nativo (lo intercepta el
+    // JS), así que somos nosotros quienes debemos cerrar. Se usa `destroy()`
+    // y NO `close()`: `close()` vuelve a emitir `closeRequested` y, como
+    // `core:window:default` no incluye `allow-destroy`, el cierre se quedaba
+    // esperando para siempre (ventana abierta y proceso colgado).
     if (window.__TAURI__?.window?.getCurrentWindow) {
         const ventanaActual = window.__TAURI__.window.getCurrentWindow();
-        let cierreEnCurso = false;
-        let permitirCierre = false;
+        let cerrando = false;
 
         ventanaActual.onCloseRequested(async (evento) => {
-            console.log('[colores] onCloseRequested recibido.');
-            if (permitirCierre) return; // deja pasar el cierre que provocamos abajo
+            // Doble clic en la X u otro evento mientras se guarda: se bloquea
+            // el cierre nativo para no cortar el guardado a medias.
+            if (cerrando) {
+                evento.preventDefault();
+                return;
+            }
 
+            cerrando = true;
             evento.preventDefault();
 
-            if (cierreEnCurso) return; // ya se está guardando
-            cierreEnCurso = true;
-
-            // No bloqueamos el cierre más de ~1.5s aunque el store no responda;
-            // los guardados inmediatos ya cubren el caso normal.
-            await Promise.race([
-                flushColoresAlCerrar(),
-                new Promise(resolve => setTimeout(resolve, 1500))
-            ]);
-
-            permitirCierre = true;
-
             try {
-                await ventanaActual.close();
+                // Si el store no responde, no se retiene al usuario más de 1.5 s.
+                // `flushColoresAlCerrar` ya captura sus propios errores.
+                await Promise.race([
+                    flushColoresAlCerrar(),
+                    new Promise(resolve => setTimeout(resolve, 1500))
+                ]);
             } catch (error) {
-                console.error('No se pudo cerrar la ventana tras guardar los colores:', error);
-                permitirCierre = false;
-                cierreEnCurso = false;
+                console.error('Error al guardar los colores antes de cerrar:', error);
+            } finally {
+                // `destroy()` no vuelve a emitir `closeRequested`: evita el
+                // bucle y cierra aunque el guardado haya fallado.
+                try {
+                    await ventanaActual.destroy();
+                } catch (error) {
+                    // Si falla (p. ej. falta el permiso en una build vieja),
+                    // se libera la bandera para que otra pulsación de X lo
+                    // reintente, en vez de dejar la ventana muerta.
+                    cerrando = false;
+                    console.error(
+                        'No se pudo cerrar la ventana (revisa el permiso core:window:allow-destroy):',
+                        error
+                    );
+                }
             }
         }).then(() => {
             console.log('[colores] onCloseRequested enganchado correctamente.');
