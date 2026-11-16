@@ -9,7 +9,7 @@ pub struct Seccion {
     pub id: u32,
     pub nombre: String,
     pub alumnos: u32,
-    pub proporcion: f32,
+    pub proporcion: f64,
 }
 
 // 2. Estado global (sin cambios)
@@ -139,7 +139,7 @@ pub fn auto_ajustar_proporciones(mut secciones: Vec<Seccion>) -> Result<Vec<Secc
     // 3. Calcular la proporción para cada sección
     for seccion in secciones.iter_mut() {
         // Regla de tres: (alumnos / max_alumnos) * 100
-        let proporcion_calculada = (seccion.alumnos as f32 / max_alumnos as f32) * 100.0;
+        let proporcion_calculada = (seccion.alumnos as f64 / max_alumnos as f64) * 100.0;
 
         // Redondeamos a 1 decimal para que se vea limpio en la UI (ej. 50.0, 33.3)
         seccion.proporcion = (proporcion_calculada * 10.0).round() / 10.0;

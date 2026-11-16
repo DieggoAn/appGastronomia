@@ -1,4 +1,4 @@
-use calamine::{open_workbook, DataType, Reader, Xlsx};
+use calamine::{open_workbook, Data, Reader, Xlsx};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,7 +17,7 @@ pub struct DiccionarioItem {
 pub struct IngredienteConsolidado {
     pub nombre: String,
     pub unidad: String,
-    pub cantidad: f32,
+    pub cantidad: f64,
     /// Clave de consolidación (nombre normalizado + unidad). La usa Rust
     /// para agrupar filas equivalentes entre archivos.
     #[serde(default)]
@@ -36,8 +36,8 @@ pub struct IngredienteConsolidado {
 pub struct IngredienteConTotal {
     pub nombre: String,
     pub unidad: String,
-    pub cantidad: f32,
-    pub cantidad_total: f32,
+    pub cantidad: f64,
+    pub cantidad_total: f64,
     #[serde(default)]
     pub clave: String,
     #[serde(default)]
@@ -137,6 +137,77 @@ pub fn puntuacion_nombre(nombre: &str) -> i32 {
     puntuacion
 }
 
+// --- 2.b Conversión de cantidades ---
+
+/// Convierte a `f64` el texto de una celda de Excel.
+///
+/// Acepta coma o punto como separador decimal y también separadores de miles:
+/// `"0,4"` → `0.4`, `"1.5"` → `1.5`, `"1.234,56"` → `1234.56`,
+/// `"1,234.56"` → `1234.56`. Si el texto no es un número devuelve `0.0` y
+/// registra una advertencia (nunca un valor truncado).
+pub fn parsear_decimal(texto: &str) -> f64 {
+    // Espacios normales, tabuladores y el espacio duro que a veces arrastra
+    // Excel al copiar/pegar.
+    let limpio: String = texto
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{00A0}')
+        .collect();
+
+    if limpio.is_empty() {
+        return 0.0;
+    }
+
+    let puntos = limpio.matches('.').count();
+    let comas = limpio.matches(',').count();
+
+    // Normalización del separador decimal.
+    let normalizado = match (puntos, comas) {
+        // "1.234,56": el último separador es la coma decimal.
+        (p, c) if p > 0 && c > 0 => {
+            if limpio.rfind(',') > limpio.rfind('.') {
+                limpio.replace('.', "").replace(',', ".")
+            } else {
+                limpio.replace(',', "")
+            }
+        }
+        // "1.234.567": varios puntos son separadores de miles.
+        (p, 0) if p > 1 => limpio.replace('.', ""),
+        // "1,234,567": varias comas son separadores de miles.
+        (0, c) if c > 1 => limpio.replace(',', ""),
+        // "0,4": coma decimal.
+        (0, _) => limpio.replace(',', "."),
+        // "0.4": ya está en formato válido para `f64`.
+        _ => limpio,
+    };
+
+    normalizado.parse::<f64>().unwrap_or_else(|_| {
+        eprintln!("[excel] Cantidad no numérica, se usa 0.0: {texto:?}");
+        0.0
+    })
+}
+
+/// Extrae la cantidad de una celda ya tipada por `calamine`.
+///
+/// Las celdas numéricas se convierten directamente; las de texto pasan por
+/// `parsear_decimal`, que sí entiende la coma decimal. No se usa
+/// `DataType::as_f64()` como atajo porque solo acepta el formato inglés
+/// (`"0.4"`), no `"0,4"`, y no entiende los separadores de miles.
+fn cantidad_de_celda(celda: &Data) -> f64 {
+    match celda {
+        Data::Int(valor) => *valor as f64,
+        Data::Float(valor) => *valor,
+        Data::Bool(valor) => {
+            if *valor {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Data::Empty => 0.0,
+        otro => parsear_decimal(&otro.to_string()),
+    }
+}
+
 // --- 3. Comandos ---
 
 #[tauri::command]
@@ -224,15 +295,8 @@ pub fn procesar_hojas_excel(
 
             let cantidad = row
                 .get(col_cantidad)
-                .map(|c| {
-                    c.as_f64().unwrap_or_else(|| {
-                        c.to_string()
-                            .replace(',', ".")
-                            .parse::<f64>()
-                            .unwrap_or(0.0)
-                    })
-                })
-                .unwrap_or(0.0) as f32;
+                .map(cantidad_de_celda)
+                .unwrap_or(0.0);
 
             if nombre.is_empty() || um.is_empty() {
                 continue;
@@ -455,8 +519,8 @@ pub fn calcular_total(
     ingredientes: Vec<IngredienteConsolidado>,
     secciones: Vec<Seccion>,
 ) -> Result<Vec<IngredienteConTotal>, String> {
-    let suma_proporciones: f32 = secciones.iter().map(|s| s.proporcion).sum();
-    let suma_alumnos: f32 = secciones.iter().map(|s| s.alumnos as f32).sum();
+    let suma_proporciones: f64 = secciones.iter().map(|s| s.proporcion).sum();
+    let suma_alumnos: f64 = secciones.iter().map(|s| s.alumnos as f64).sum();
 
     let factor = if suma_proporciones > 0.0 {
         suma_proporciones / 100.0
@@ -482,4 +546,42 @@ pub fn calcular_total(
 
     resultado.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
     Ok(resultado)
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    #[test]
+    fn parsea_punto_y_coma_decimal() {
+        assert_eq!(parsear_decimal("0.4"), 0.4);
+        assert_eq!(parsear_decimal("1.5"), 1.5);
+        assert_eq!(parsear_decimal("0,4"), 0.4);
+        assert_eq!(parsear_decimal("1,5"), 1.5);
+        assert_eq!(parsear_decimal("  0,4  "), 0.4);
+        assert_eq!(parsear_decimal("0,4\u{00A0}"), 0.4);
+    }
+
+    #[test]
+    fn parsea_separadores_de_miles() {
+        assert_eq!(parsear_decimal("1.234,56"), 1234.56);
+        assert_eq!(parsear_decimal("1,234.56"), 1234.56);
+        assert_eq!(parsear_decimal("1.234.567"), 1234567.0);
+        assert_eq!(parsear_decimal("1,234,567"), 1234567.0);
+    }
+
+    #[test]
+    fn devuelve_cero_si_no_es_numero() {
+        assert_eq!(parsear_decimal(""), 0.0);
+        assert_eq!(parsear_decimal("   "), 0.0);
+        assert_eq!(parsear_decimal("sin dato"), 0.0);
+    }
+
+    #[test]
+    fn celdas_tipadas_se_convierten_a_f64() {
+        assert_eq!(cantidad_de_celda(&Data::Float(0.4)), 0.4);
+        assert_eq!(cantidad_de_celda(&Data::Int(3)), 3.0);
+        assert_eq!(cantidad_de_celda(&Data::String("1,5".to_string())), 1.5);
+        assert_eq!(cantidad_de_celda(&Data::Empty), 0.0);
+    }
 }

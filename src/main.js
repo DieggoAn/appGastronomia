@@ -64,6 +64,17 @@ window.addEventListener('DOMContentLoaded', () => {
         btnVincular.addEventListener('click', abrirModalVincular);
     }
 
+    // Exportación: Excel (.xlsx) y PDF (respetan el filtro de color activo)
+    const btnExportExcel = document.getElementById('btnExportExcel');
+    const btnExportPdf = document.getElementById('btnExportPdf');
+
+    if (btnExportExcel) {
+        btnExportExcel.addEventListener('click', exportarExcel);
+    }
+    if (btnExportPdf) {
+        btnExportPdf.addEventListener('click', exportarPdf);
+    }
+
     // Opción B: volcar los colores al store antes de permitir el cierre
     if (window.__TAURI__?.window?.getCurrentWindow) {
         const ventanaActual = window.__TAURI__.window.getCurrentWindow();
@@ -1764,11 +1775,16 @@ function quitarColorFila(idFila) {
     persistirColoresFilas();
 }
 
-// --- FILTRO POR COLOR DE LA TABLA PRINCIPAL ---
+// --- FILTRO POR COLOR DE LA TABLA PRINCIPAL (SELECCIÓN MÚLTIPLE) ---
 
-// Estado del filtro en memoria: id de color activo o null = "Mostrar todos".
+// Centinela para el checkbox "Sin color": no es un color real, así que no
+// puede colisionar con los ids de COLORES_INGREDIENTE.
+const FILTRO_SIN_COLOR = '__sin_color__';
+
+// Estado del filtro en memoria: ids de color seleccionados + posible
+// FILTRO_SIN_COLOR. Vacío = sin filtro (se muestran todas las filas).
 // No se persiste: al reiniciar la app la tabla vuelve a mostrarse completa.
-let filtroColorActivo = null;
+let coloresFiltroActivos = new Set();
 
 // Nodo del menú desplegable abierto (o null). Se ancla con position: fixed
 // porque .table-container tiene overflow: hidden y recortaría el dropdown.
@@ -1779,46 +1795,63 @@ function nombreColor(colorId) {
     return colorId.charAt(0).toUpperCase() + colorId.slice(1);
 }
 
-// Filas de la tabla agrupadas por color asignado
+// Texto legible del estado actual, para el tooltip del botón
+function describirFiltroColor() {
+    if (coloresFiltroActivos.size === 0) return '';
+
+    return Array.from(coloresFiltroActivos)
+        .map(id => (id === FILTRO_SIN_COLOR ? 'Sin color' : nombreColor(id)))
+        .join(', ');
+}
+
+// Filas de la tabla agrupadas por color asignado ("Sin color" incluido)
 function contarFilasPorColor(tbody) {
     const conteo = new Map(COLORES_INGREDIENTE.map(c => [c.id, 0]));
+    conteo.set(FILTRO_SIN_COLOR, 0);
     if (!tbody) return conteo;
 
     tbody.querySelectorAll('tr[data-id-fila]').forEach(fila => {
         const colorId = coloresIngredientes.get(fila.dataset.idFila);
-        if (colorId && conteo.has(colorId)) {
-            conteo.set(colorId, conteo.get(colorId) + 1);
-        }
+        const clave = colorId && conteo.has(colorId) ? colorId : FILTRO_SIN_COLOR;
+        conteo.set(clave, (conteo.get(clave) || 0) + 1);
     });
 
     return conteo;
 }
 
-// Oculta/muestra filas según el color activo. No repinta la tabla: solo
-// alterna el atributo `hidden`, así se conservan comentarios, códigos y
-// los valores ya calculados.
+// Oculta/muestra filas según los colores seleccionados (lógica OR).
+// No repinta la tabla: solo alterna el atributo `hidden`, así se conservan
+// comentarios, códigos y los valores ya calculados.
 function reaplicarFiltroColor() {
     const tbody = document.getElementById('tablaConsolidadaBody');
     if (!tbody) return;
 
-    const activo = filtroColorActivo;
+    const hayFiltro = coloresFiltroActivos.size > 0;
     let visibles = 0;
 
     tbody.querySelectorAll('tr[data-id-fila]').forEach(fila => {
-        const coincide = !activo || coloresIngredientes.get(fila.dataset.idFila) === activo;
+        const colorId = coloresIngredientes.get(fila.dataset.idFila) || null;
+
+        // Sin selección: todo visible. Con selección: el color de la fila debe
+        // estar entre los elegidos, o estar sin pintar y "Sin color" marcado.
+        const coincide = !hayFiltro
+            || (colorId
+                ? coloresFiltroActivos.has(colorId)
+                : coloresFiltroActivos.has(FILTRO_SIN_COLOR));
+
         fila.hidden = !coincide;
         if (coincide) visibles++;
     });
 
-    actualizarAvisoFiltroVacio(tbody, activo, visibles);
+    actualizarAvisoFiltroVacio(tbody, hayFiltro, visibles);
 }
 
 // Cuando el filtro deja la tabla sin filas, se avisa en lugar de mostrar
 // un hueco en blanco (el aviso no es una fila de datos: no tiene data-id-fila).
-function actualizarAvisoFiltroVacio(tbody, activo, visibles) {
+function actualizarAvisoFiltroVacio(tbody, hayFiltro, visibles) {
     tbody.querySelectorAll('tr.fila-vacia-filtro').forEach(fila => fila.remove());
 
-    if (!activo || visibles > 0) return;
+    if (!hayFiltro || visibles > 0) return;
 
     const tr = document.createElement('tr');
     tr.className = 'fila-vacia-filtro';
@@ -1826,51 +1859,88 @@ function actualizarAvisoFiltroVacio(tbody, activo, visibles) {
     const td = document.createElement('td');
     td.colSpan = 6;
     td.className = 'fila-vacia-filtro-celda';
-    td.textContent = `Ninguna fila tiene el color ${nombreColor(activo)}.`;
+    td.textContent = 'Ninguna fila coincide con los colores seleccionados.';
 
     tr.appendChild(td);
     tbody.appendChild(tr);
 }
 
-// Refleja el estado del filtro en la barra de la tabla: texto + punto de color
+// Refleja el estado del filtro en la barra de la tabla: texto + badge con
+// la cantidad de colores seleccionados.
 function actualizarIndicadorFiltroColor() {
     const boton = document.getElementById('btnFiltrarColor');
     const etiqueta = document.getElementById('filtrarColorLabel');
-    const punto = document.getElementById('filtrarColorDot');
+    const badge = document.getElementById('filtrarColorBadge');
     if (!boton || !etiqueta) return;
 
-    const activo = filtroColorActivo;
+    const total = coloresFiltroActivos.size;
 
-    boton.classList.toggle('is-active', Boolean(activo));
-    boton.title = activo
-        ? `Filtro activo: ${nombreColor(activo)}. Clic para cambiarlo o quitarlo.`
-        : 'Mostrar solo las filas de un color';
-    etiqueta.textContent = activo ? `Mostrando: ${nombreColor(activo)}` : 'Filtrar por color';
+    boton.classList.toggle('is-active', total > 0);
+    boton.title = total > 0
+        ? `Mostrando: ${describirFiltroColor()}. Clic para cambiar el filtro.`
+        : 'Mostrar las filas de uno o varios colores';
+    etiqueta.textContent = total > 0 ? `Filtro (${total})` : 'Filtrar por color';
 
-    if (punto) {
-        punto.hidden = !activo;
-        punto.style.background = activo ? (COLORES_POR_ID.get(activo) || '') : '';
+    if (badge) {
+        badge.hidden = total === 0;
+        badge.textContent = String(total);
     }
 }
 
-function aplicarFiltroColor(colorId) {
-    if (!COLORES_POR_ID.has(colorId)) return;
+// Marca/desmarca un color y recalcula el filtro de inmediato
+function alternarColorFiltro(colorId, seleccionado) {
+    if (seleccionado) {
+        coloresFiltroActivos.add(colorId);
+    } else {
+        coloresFiltroActivos.delete(colorId);
+    }
 
-    filtroColorActivo = colorId;
     reaplicarFiltroColor();
     actualizarIndicadorFiltroColor();
 
-    console.log(`[filtro-color] Filtro activo: ${colorId}`);
+    console.log(
+        `[filtro-color] ${coloresFiltroActivos.size} color(es) activo(s): ` +
+        (describirFiltroColor() || 'todos')
+    );
 }
 
-// "Mostrar todos": vuelve al orden y visibilidad originales (solo se quita
-// el `hidden`, las filas nunca se reordenan ni se eliminan del DOM).
+// "Limpiar filtro": se vacía la selección y vuelven a verse todas las filas
+// (solo se quita `hidden`; el orden del DOM nunca cambia).
 function quitarFiltroColor() {
-    filtroColorActivo = null;
+    coloresFiltroActivos.clear();
+    sincronizarCheckboxesFiltro();
     reaplicarFiltroColor();
     actualizarIndicadorFiltroColor();
 
-    console.log('[filtro-color] Filtro quitado: se muestran todas las filas.');
+    console.log('[filtro-color] Filtro limpiado: se muestran todas las filas.');
+}
+
+// "Seleccionar todo": marca los 8 colores y también "Sin color"
+function seleccionarTodoElFiltroColor() {
+    COLORES_INGREDIENTE.forEach(color => coloresFiltroActivos.add(color.id));
+    coloresFiltroActivos.add(FILTRO_SIN_COLOR);
+
+    sincronizarCheckboxesFiltro();
+    reaplicarFiltroColor();
+    actualizarIndicadorFiltroColor();
+
+    console.log('[filtro-color] Seleccionados todos los colores.');
+}
+
+// Refleja el estado del Set en los checkboxes del menú abierto
+function sincronizarCheckboxesFiltro() {
+    if (!menuFiltroColor) return;
+
+    menuFiltroColor.querySelectorAll('input.color-filter-check').forEach(check => {
+        const activo = coloresFiltroActivos.has(check.dataset.colorId);
+        check.checked = activo;
+
+        const fila = check.closest('.color-filter-item');
+        if (fila) fila.classList.toggle('is-selected', activo);
+    });
+
+    const limpiar = menuFiltroColor.querySelector('.color-filter-clear');
+    if (limpiar) limpiar.disabled = coloresFiltroActivos.size === 0;
 }
 
 function abrirMenuFiltroColor() {
@@ -1886,61 +1956,57 @@ function abrirMenuFiltroColor() {
     const menu = document.createElement('div');
     menu.id = 'colorFilterMenu';
     menu.className = 'color-filter-menu';
-    menu.setAttribute('role', 'menu');
+    menu.setAttribute('role', 'group');
+    menu.setAttribute('aria-label', 'Filtrar filas por color');
 
     const titulo = document.createElement('div');
     titulo.className = 'color-filter-heading';
-    titulo.textContent = 'Mostrar solo filas de:';
+    titulo.textContent = 'Mostrar filas de:';
     menu.appendChild(titulo);
 
     const conteo = contarFilasPorColor(document.getElementById('tablaConsolidadaBody'));
 
+    // Un checkbox por color
     COLORES_INGREDIENTE.forEach(({ id, valor }) => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'color-filter-item';
-        item.setAttribute('role', 'menuitemradio');
-        item.setAttribute('aria-checked', String(filtroColorActivo === id));
-        if (filtroColorActivo === id) item.classList.add('is-selected');
-
-        const swatch = document.createElement('span');
-        swatch.className = 'color-filter-swatch';
-        swatch.style.background = valor;
-
-        const nombre = document.createElement('span');
-        nombre.className = 'color-filter-name';
-        nombre.textContent = nombreColor(id);
-
-        const cantidad = document.createElement('span');
-        cantidad.className = 'color-filter-count';
-        cantidad.textContent = String(conteo.get(id) || 0);
-        cantidad.title = `${conteo.get(id) || 0} fila(s) con este color`;
-
-        item.append(swatch, nombre, cantidad);
-
-        item.addEventListener('click', () => {
-            aplicarFiltroColor(id);
-            cerrarMenuFiltroColor();
-        });
-
-        menu.appendChild(item);
+        menu.appendChild(crearOpcionFiltroColor(id, nombreColor(id), valor, conteo.get(id) || 0));
     });
+
+    // Checkbox extra: filas sin pintar
+    menu.appendChild(
+        crearOpcionFiltroColor(FILTRO_SIN_COLOR, 'Sin color', null, conteo.get(FILTRO_SIN_COLOR) || 0)
+    );
 
     const separador = document.createElement('div');
     separador.className = 'color-filter-separator';
     menu.appendChild(separador);
 
+    // Acciones: no cierran el menú, el filtro se aplica al instante
+    const acciones = document.createElement('div');
+    acciones.className = 'color-filter-actions';
+
+    const seleccionarTodo = document.createElement('button');
+    seleccionarTodo.type = 'button';
+    seleccionarTodo.className = 'color-filter-action';
+    seleccionarTodo.textContent = 'Seleccionar todo';
+    seleccionarTodo.addEventListener('click', seleccionarTodoElFiltroColor);
+
     const limpiar = document.createElement('button');
     limpiar.type = 'button';
-    limpiar.className = 'color-filter-clear';
-    limpiar.disabled = !filtroColorActivo;
-    limpiar.textContent = 'Mostrar todos';
-    limpiar.addEventListener('click', () => {
-        quitarFiltroColor();
-        cerrarMenuFiltroColor();
-    });
+    limpiar.className = 'color-filter-action color-filter-clear';
+    limpiar.disabled = coloresFiltroActivos.size === 0;
+    limpiar.textContent = 'Limpiar';
+    limpiar.addEventListener('click', quitarFiltroColor);
 
-    menu.appendChild(limpiar);
+    acciones.append(seleccionarTodo, limpiar);
+    menu.appendChild(acciones);
+
+    const cerrar = document.createElement('button');
+    cerrar.type = 'button';
+    cerrar.className = 'color-filter-close';
+    cerrar.textContent = 'Cerrar';
+    cerrar.addEventListener('click', cerrarMenuFiltroColor);
+    menu.appendChild(cerrar);
+
     document.body.appendChild(menu);
     menuFiltroColor = menu;
 
@@ -1968,6 +2034,49 @@ function abrirMenuFiltroColor() {
     boton.classList.add('is-open');
 }
 
+// Fila del menú: checkbox + muestra de color + nombre + contador de filas.
+// Se usa <label> para que todo el renglón alterne el checkbox sin JS extra.
+function crearOpcionFiltroColor(colorId, etiqueta, colorHex, cantidad) {
+    const fila = document.createElement('label');
+    fila.className = 'color-filter-item';
+    fila.dataset.colorId = colorId;
+
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'color-filter-check';
+    check.dataset.colorId = colorId;
+    check.checked = coloresFiltroActivos.has(colorId);
+
+    if (check.checked) fila.classList.add('is-selected');
+
+    const swatch = document.createElement('span');
+    swatch.className = 'color-filter-swatch';
+    if (colorHex) {
+        swatch.style.background = colorHex;
+    } else {
+        swatch.classList.add('is-none');
+    }
+
+    const nombre = document.createElement('span');
+    nombre.className = 'color-filter-name';
+    nombre.textContent = etiqueta;
+
+    const contador = document.createElement('span');
+    contador.className = 'color-filter-count';
+    contador.textContent = String(cantidad);
+    contador.title = `${cantidad} fila(s)`;
+
+    check.addEventListener('change', () => {
+        alternarColorFiltro(colorId, check.checked);
+        fila.classList.toggle('is-selected', check.checked);
+        const limpiar = menuFiltroColor?.querySelector('.color-filter-clear');
+        if (limpiar) limpiar.disabled = coloresFiltroActivos.size === 0;
+    });
+
+    fila.append(check, swatch, nombre, contador);
+    return fila;
+}
+
 function cerrarMenuFiltroColor() {
     if (menuFiltroColor) {
         menuFiltroColor.remove();
@@ -1979,6 +2088,264 @@ function cerrarMenuFiltroColor() {
         boton.setAttribute('aria-expanded', 'false');
         boton.classList.remove('is-open');
     }
+}
+
+// --- EXPORTACIÓN (Excel .xlsx en Rust / PDF por impresión) ---
+// Ambas exportaciones leen SOLO las filas visibles del DOM, así respetan
+// automáticamente el filtro por color y cualquier otro ocultamiento.
+
+const COLUMNAS_EXPORTACION = [
+    'Ingrediente',
+    'Código',
+    'Unidad',
+    'Cantidad',
+    'Cantidad Total',
+    'Comentarios'
+];
+
+// Filas de datos que el usuario está viendo (sin `hidden` ni display: none)
+function filasVisiblesTabla() {
+    const tbody = document.getElementById('tablaConsolidadaBody');
+    if (!tbody) return [];
+
+    return Array.from(tbody.querySelectorAll('tr[data-id-fila]')).filter(fila => {
+        if (fila.hidden) return false;
+        return window.getComputedStyle(fila).display !== 'none';
+    });
+}
+
+// Código elegido en la celda interactiva (select del diccionario o input manual)
+function codigoDeFila(fila) {
+    const celda = fila.children[1];
+    if (!celda) return '';
+
+    const select = celda.querySelector('select');
+    if (select) {
+        const valor = select.value;
+        return valor && valor !== CODIGO_MANUAL ? valor : '';
+    }
+
+    const input = celda.querySelector('input');
+    if (input) return input.value.trim();
+
+    return (celda.innerText || '').trim();
+}
+
+// Valores de una fila, en el orden de COLUMNAS_EXPORTACION
+function datosFilaTabla(fila) {
+    const comentario = fila.querySelector('.input-comentario');
+
+    return [
+        (fila.children[0]?.innerText || '').trim(),
+        codigoDeFila(fila),
+        (fila.children[2]?.innerText || '').trim(),
+        (fila.children[3]?.innerText || '').trim(),
+        (fila.children[4]?.innerText || '').trim(),
+        comentario ? comentario.value.trim() : (fila.children[5]?.innerText || '').trim()
+    ];
+}
+
+function tituloExportacion() {
+    const input = document.getElementById('tituloConsolidado');
+    const titulo = (input?.value || '').trim();
+    return titulo || 'Consolidado de ingredientes';
+}
+
+// Nombre de archivo seguro para Windows: sin caracteres prohibidos
+function nombreArchivoExportacion(extension) {
+    const base = tituloExportacion()
+        .replace(/[\\/:*?"<>|]+/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim() || 'consolidado';
+
+    const hoy = new Date();
+    const marca = [
+        hoy.getFullYear(),
+        String(hoy.getMonth() + 1).padStart(2, '0'),
+        String(hoy.getDate()).padStart(2, '0')
+    ].join('-');
+
+    return `${base} ${marca}.${extension}`;
+}
+
+// --- EXPORTACIÓN A EXCEL (.xlsx real, generado en Rust) ---
+// El frontend solo recolecta textos ya resueltos (nunca HTML de inputs) y los
+// envía a Rust, que escribe el libro con rust_xlsxwriter.
+
+// Columnas que Excel debe tratar como número: Cantidad y Cantidad Total.
+// Se declaran explícitamente para no convertir códigos como "001" en 1.
+const COLUMNAS_NUMERICAS_EXPORTACION = [3, 4];
+
+async function exportarExcel() {
+    const filas = filasVisiblesTabla();
+
+    if (filas.length === 0) {
+        alert('No hay filas visibles para exportar.\n\nRevisa el filtro por color.');
+        return;
+    }
+
+    // Diálogo nativo "Guardar como".
+    let ruta;
+    try {
+        ruta = await window.__TAURI__.dialog.save({
+            title: 'Guardar resumen como Excel',
+            defaultPath: nombreArchivoExportacion('xlsx'),
+            filters: [{ name: 'Libro de Excel', extensions: ['xlsx'] }]
+        });
+    } catch (error) {
+        console.error('No se pudo abrir el diálogo de guardado:', error);
+        return;
+    }
+
+    // El usuario canceló: no se hace nada.
+    if (!ruta) return;
+
+    // El diálogo no añade la extensión por sí solo.
+    if (!/\.xlsx$/i.test(ruta)) ruta += '.xlsx';
+
+    // Primera fila = encabezados; luego solo las filas visibles por el filtro.
+    const datos = [
+        COLUMNAS_EXPORTACION,
+        ...filas.map(datosFilaTabla)
+    ];
+
+    try {
+        await invoke('exportar_excel', {
+            datos,
+            columnasNumericas: COLUMNAS_NUMERICAS_EXPORTACION,
+            ruta
+        });
+
+        console.log(`[export] Excel generado con ${filas.length} fila(s) visible(s): ${ruta}`);
+    } catch (error) {
+        console.error('No se pudo generar el Excel:', error);
+        await window.__TAURI__.dialog.message(
+            `No se pudo guardar el Excel:\n\n${error}`,
+            { title: 'Error al exportar', kind: 'error' }
+        );
+    }
+}
+
+// Fecha de hoy en DD/MM/AAAA. `es-CL` separa con guiones ("15-11-2026"),
+// así que se normalizan los separadores al formato del reporte.
+function fechaCabeceraImpresion(fecha = new Date()) {
+    return fecha
+        .toLocaleDateString('es-CL', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+        })
+        .replace(/[-.]/g, '/');
+}
+
+// Rellena #print-header (oculto en pantalla) y devuelve una copia lista para
+// incrustar en la hoja de impresión. La copia pierde el id y la clase que lo
+// oculta, para no duplicar identificadores ni heredar el display: none.
+function construirCabeceraImpresion() {
+    const cabecera = document.getElementById('print-header');
+    if (!cabecera) return null;
+
+    cabecera.textContent = '';
+
+    const titulo = document.createElement('h1');
+    titulo.className = 'print-header-title';
+    titulo.textContent = tituloExportacion();
+
+    const meta = document.createElement('p');
+    meta.className = 'print-header-meta';
+    meta.textContent = `Fecha: ${fechaCabeceraImpresion()}`;
+
+    cabecera.append(titulo, meta);
+
+    const copia = cabecera.cloneNode(true);
+    copia.removeAttribute('id');
+    copia.classList.remove('ocultar-en-pantalla');
+
+    return copia;
+}
+
+// Hoja de impresión: cabecera del reporte + tabla en texto plano (sin inputs)
+// y sin colores de fila, para que el PDF salga limpio en blanco y negro.
+function construirHojaImpresion(filas) {
+    const hoja = document.createElement('section');
+    hoja.className = 'solo-impresion';
+
+    const cabecera = construirCabeceraImpresion();
+    if (cabecera) hoja.appendChild(cabecera);
+
+    const tabla = document.createElement('table');
+    tabla.className = 'print-table';
+
+    const thead = document.createElement('thead');
+    const filaCabecera = document.createElement('tr');
+    COLUMNAS_EXPORTACION.forEach(nombre => {
+        const th = document.createElement('th');
+        th.textContent = nombre;
+        filaCabecera.appendChild(th);
+    });
+    thead.appendChild(filaCabecera);
+
+    const tbody = document.createElement('tbody');
+    filas.forEach(fila => {
+        const tr = document.createElement('tr');
+
+        datosFilaTabla(fila).forEach(valor => {
+            const td = document.createElement('td');
+            td.textContent = valor;
+            tr.appendChild(td);
+        });
+
+        tbody.appendChild(tr);
+    });
+
+    tabla.append(thead, tbody);
+    hoja.appendChild(tabla);
+
+    return hoja;
+}
+
+function exportarPdf() {
+    const filas = filasVisiblesTabla();
+
+    if (filas.length === 0) {
+        alert('No hay filas visibles para exportar.\n\nRevisa el filtro por color.');
+        return;
+    }
+
+    // Se elimina cualquier hoja previa (p. ej. si se canceló una impresión)
+    document.querySelectorAll('.solo-impresion').forEach(hoja => hoja.remove());
+
+    const hoja = construirHojaImpresion(filas);
+    document.body.appendChild(hoja);
+
+    // Con esta clase, @media print oculta toda la app y deja solo la hoja
+    document.body.classList.add('imprimiendo');
+
+    let temporizador = null;
+
+    const limpiar = () => {
+        if (temporizador) clearTimeout(temporizador);
+        window.removeEventListener('afterprint', limpiar);
+        document.body.classList.remove('imprimiendo');
+        hoja.remove();
+
+        // La cabecera se vacía para que un Ctrl+P posterior no muestre
+        // datos de una exportación anterior.
+        const cabecera = document.getElementById('print-header');
+        if (cabecera) cabecera.textContent = '';
+    };
+
+    window.addEventListener('afterprint', limpiar);
+
+    // Espera un frame para que el navegador aplique estilos y pintado
+    requestAnimationFrame(() => {
+        window.print();
+
+        // Respaldo por si `afterprint` no se dispara en algún WebView
+        temporizador = setTimeout(limpiar, 30000);
+    });
+
+    console.log(`[export] PDF preparado con ${filas.length} fila(s) visible(s).`);
 }
 
 // Lee los colores persistidos al iniciar la app.

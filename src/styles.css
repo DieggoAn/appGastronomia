@@ -283,24 +283,33 @@ body {
 .btn-toolbar.is-open .icon,
 .btn-toolbar.is-active .icon { color: var(--accent); }
 
-/* Punto con el color activo dentro del botón */
-.filter-color-dot {
-    display: inline-block;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 1px solid rgba(0, 0, 0, 0.18);
+/* Badge con la cantidad de colores seleccionados */
+.filter-color-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
     flex-shrink: 0;
 }
 /* El display de arriba ganaría al [hidden] del navegador: se anula explícitamente */
-.filter-color-dot[hidden] { display: none; }
+.filter-color-badge[hidden] { display: none; }
 
 /* Dropdown del filtro. Es position: fixed porque .table-container tiene
    overflow: hidden y recortaría un menú absoluto dentro de la cabecera. */
 .color-filter-menu {
     position: fixed;
     z-index: 1000;
-    min-width: 200px;
+    min-width: 210px;
+    max-height: 70vh;
+    overflow-y: auto;
     padding: 6px;
     background: var(--panel);
     border: 1px solid var(--border-strong);
@@ -320,14 +329,13 @@ body {
     text-transform: uppercase;
     color: var(--text-muted);
 }
+/* Cada opción es un <label>: clic en cualquier parte alterna el checkbox */
 .color-filter-item {
     display: flex;
     align-items: center;
     gap: 8px;
     width: 100%;
     padding: 6px 8px;
-    background: transparent;
-    border: none;
     border-radius: var(--radius-sm);
     color: var(--text);
     font-family: inherit;
@@ -335,6 +343,7 @@ body {
     font-weight: 500;
     text-align: left;
     cursor: pointer;
+    user-select: none;
     transition: background 0.12s ease, color 0.12s ease;
 }
 .color-filter-item:hover { background: var(--hover); }
@@ -342,12 +351,25 @@ body {
     background: var(--accent-soft);
     color: var(--accent);
 }
+.color-filter-check {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    flex-shrink: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
 .color-filter-swatch {
     width: 14px;
     height: 14px;
     border-radius: 4px;
     border: 1px solid rgba(0, 0, 0, 0.14);
     flex-shrink: 0;
+}
+/* Muestra de "Sin color": casilla vacía con borde discontinuo */
+.color-filter-swatch.is-none {
+    background: transparent;
+    border: 1px dashed var(--border-strong);
 }
 .color-filter-name { flex: 1; }
 .color-filter-count {
@@ -360,22 +382,46 @@ body {
     margin: 4px 2px;
     background: var(--border);
 }
-.color-filter-clear {
-    width: 100%;
-    padding: 6px 8px;
+.color-filter-actions {
+    display: flex;
+    gap: 4px;
+    padding: 0 2px;
+}
+.color-filter-action {
+    flex: 1 1 0;
+    padding: 5px 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.color-filter-action:hover:not(:disabled) {
+    background: var(--hover);
+    border-color: var(--border-strong);
+    color: var(--accent);
+}
+.color-filter-action:disabled { opacity: 0.45; cursor: default; }
+.color-filter-close {
+    margin-top: 2px;
+    padding: 5px 6px;
     background: transparent;
     border: none;
     border-radius: var(--radius-sm);
     color: var(--text-muted);
     font-family: inherit;
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 500;
-    text-align: left;
+    text-align: center;
     cursor: pointer;
     transition: background 0.12s ease, color 0.12s ease;
 }
-.color-filter-clear:hover:not(:disabled) { background: var(--hover); color: var(--text); }
-.color-filter-clear:disabled { opacity: 0.45; cursor: default; }
+.color-filter-close:hover { background: var(--hover); color: var(--text); }
 
 /* El atributo [hidden] debe ganarle al display de tabla de las filas */
 .data-table tbody tr[hidden] { display: none; }
@@ -1587,13 +1633,154 @@ body {
 }
 
 /* Pantallas medianas: se prioriza el icono y el layout sigue en una sola fila.
-   El punto del filtro se conserva porque es el único indicador del color activo. */
+   El badge del filtro se conserva porque indica cuántos colores están activos. */
 @media (max-width: 1100px) {
-    .btn-toolbar span:not(.filter-color-dot) { display: none; }
+    .btn-toolbar span:not(.filter-color-badge) { display: none; }
     .btn-toolbar { padding: 4px 6px; }
 }
 @media (max-width: 900px) {
     .banner-buttons { gap: 2px; }
     .banner-buttons .btn-nav { padding: 6px 8px; }
     .banner-buttons .btn-label { display: none; }
+}
+
+/* --- EXPORTACIÓN A PDF (window.print) --- */
+
+/* La hoja de impresión se genera en JS y no se ve en pantalla */
+.solo-impresion { display: none; }
+
+/* Utilidad: bloque que existe en el DOM pero solo se ve al imprimir */
+.ocultar-en-pantalla { display: none; }
+
+@media print {
+    /* Utilidad: oculta un bloque solo al imprimir. Se aplica al banner
+       superior y a la cabecera de la tabla por si se usa Ctrl+P. */
+    .ocultar-en-impresion { display: none !important; }
+
+    /* Margen de página en cero: elimina la cabecera y el pie que añade el
+       motor de impresión (título del documento, URL, fecha y páginas).
+       Los márgenes reales se recuperan como padding de la hoja. */
+    @page {
+        margin: 0;
+    }
+
+    html,
+    body {
+        background: #fff !important;
+        color: #000 !important;
+    }
+
+    /* Solo se oculta la app cuando la impresión la lanzó el botón PDF */
+    body.imprimiendo > *:not(.solo-impresion) { display: none !important; }
+
+    body.imprimiendo {
+        /* El flex column del layout rompe la paginación del PDF */
+        display: block !important;
+        margin: 0;
+        padding: 0;
+        background: #fff !important;
+        color: #000 !important;
+    }
+
+    body.imprimiendo .solo-impresion {
+        display: block !important;
+        padding: 12mm;
+        background: #fff !important;
+        color: #000 !important;
+    }
+
+    /* --- CABECERA DEL REPORTE (título, fecha y filtro) ---
+       Vive oculta en la app (justo antes de la tabla) y se copia dentro de
+       .solo-impresion al pulsar "PDF". Centrada, en negro y con un borde
+       inferior fino para separarla de la tabla. */
+    .print-header {
+        display: block !important;
+        margin: 0 0 20px;
+        padding: 0 0 8px;
+        border-bottom: 1px solid #ccc !important;
+        background: #fff !important;
+        color: #000 !important;
+        text-align: center;
+    }
+    /* Si nadie la rellenó (p. ej. un Ctrl+P manual), no debe dejar hueco */
+    .print-header:empty { display: none !important; }
+
+    .print-header-title {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.25;
+        color: #000 !important;
+        text-align: center;
+    }
+
+    .print-header-meta {
+        margin: 4px 0 0;
+        font-size: 10.5px;
+        color: #333 !important;
+        text-align: center;
+    }
+
+    /* --- BLANCO Y NEGRO ---
+       Se anula cualquier fondo, incluidos los `style` inline con los que la
+       tabla pinta los colores de fila (un !important de autor gana al inline).
+       Tambien cubre clases de color tipo .fila-rojo / .fila-verde. */
+    body.imprimiendo .solo-impresion,
+    body.imprimiendo .solo-impresion table,
+    body.imprimiendo .solo-impresion thead,
+    body.imprimiendo .solo-impresion tbody,
+    body.imprimiendo .solo-impresion tr,
+    body.imprimiendo .solo-impresion th,
+    body.imprimiendo .solo-impresion td,
+    body.imprimiendo [class*="fila-"] {
+        background: #fff !important;
+        background-color: #fff !important;
+        background-image: none !important;
+        color: #000 !important;
+        box-shadow: none !important;
+        -webkit-print-color-adjust: economy;
+        print-color-adjust: economy;
+    }
+
+    .solo-impresion .print-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: inherit;
+        font-size: 11px;
+        color: #000 !important;
+    }
+
+    /* Bordes para distinguir filas sin usar color */
+    .solo-impresion .print-table th,
+    .solo-impresion .print-table td {
+        border: 1px solid #ccc !important;
+        padding: 5px 6px;
+        text-align: left;
+        vertical-align: top;
+    }
+    .solo-impresion .print-table th {
+        background: #fff !important;
+        font-weight: 600;
+    }
+
+    /* Repite la cabecera en cada página */
+    .solo-impresion .print-table thead { display: table-header-group; }
+    .solo-impresion .print-table tr { break-inside: avoid; }
+    .solo-impresion .print-table td:last-child { white-space: pre-wrap; }
+
+    /* Celdas interactivas: si se imprime la tabla real (Ctrl+P), los inputs y
+       selects salen como texto plano, sin fondo ni flechas de control. */
+    body.imprimiendo input,
+    body.imprimiendo select,
+    body.imprimiendo textarea,
+    body.imprimiendo .code-select,
+    body.imprimiendo .codigo-manual-wrapper {
+        background: #fff !important;
+        color: #000 !important;
+        border: 1px solid #ccc !important;
+        box-shadow: none !important;
+        -webkit-appearance: none;
+        appearance: none;
+    }
+    body.imprimiendo .code-select-chevron { display: none !important; }
 }
