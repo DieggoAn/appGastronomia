@@ -9,22 +9,55 @@ let ingredientesPorArchivo = [];
 let tituloConsolidado = 'Consolidado de ingredientes';
 let diccionarioMaestro = [];
 
-// Ajustes de procesamiento persistidos en config.json. Por ahora solo se
-// guardan y recuperan: ninguna regla de cálculo los consume todavía.
-let ajustesProcesamiento = {
-    delayAutoprocesadoMs: 500,
-    sinonimosIngrediente: [],
-    sinonimosUnidad: [],
-    sinonimosCantidad: [],
-    filasCabeceraIgnoradas: 0,
-    unidadPorDefecto: 'UNIDAD',
-    tema: 'claro',
-    formatoNumeros: 'punto',
-    prefijoExportacion: 'Resumen_',
-    incluirColoresExportacion: true,
-    columnasExportacion: ['ingrediente', 'codigo', 'unidad', 'cantidad', 'total', 'comentarios'],
-    ingredientesNoEncontrados: 'omitir'
-};
+// Ajustes GENERALES de la app (pestañas General, Interfaz, Exportación y
+// Sistema). No contienen ninguna regla de lectura de Excel: eso vive aparte en
+// `mapeoInsumos` y se persiste bajo la clave `mapeo_insumos` de config.json.
+function crearAjustesPorDefecto() {
+    return {
+        delayAutoprocesadoMs: 500,
+        tema: 'claro',
+        formatoNumeros: 'punto',
+        prefijoExportacion: 'Resumen_',
+        incluirColoresExportacion: true,
+        columnasExportacion: ['ingrediente', 'codigo', 'unidad', 'cantidad', 'total', 'comentarios'],
+        ingredientesNoEncontrados: 'omitir'
+    };
+}
+
+// Configuración segregada del tratamiento de Excel (pestaña "Mapeo de
+// Insumos"): sinónimos de columnas, filtros, asociaciones y cabeceras.
+// Los valores por defecto reproducen las reglas que antes estaban fijas.
+function crearMapeoPorDefecto() {
+    return {
+        sinonimosIngrediente: ['ingrediente', 'descripción', 'material'],
+        sinonimosUnidad: ['u/m', 'um', 'unidad'],
+        sinonimosCantidad: ['cantidad'],
+        sinonimosTotal: ['total', 'total cantidad'],
+        etiquetasCantidadParcial: ['a', 'b', 'c', 'tp', 'ta'],
+        prefijosCantidad: ['cantidad', 'ctdad.', 'ctdad', 'cant.', 'cant'],
+        palabrasMonetarias: [
+            'costo', 'coste', 'precio', 'valor', 'monto', 'importe', 'neto', 'bruto'
+        ],
+        palabrasFilaIgnorada: ['material', 'descripción'],
+        asociacionesIngredientes: [],
+        unidades: [
+            { estandar: 'Litro', variantes: ['litro', 'litros', 'lt', 'lts', 'l'] },
+            { estandar: 'Kilo', variantes: ['kilo', 'kilos', 'kg', 'kgs', 'kilogramo', 'kilogramos'] },
+            { estandar: 'Gramo', variantes: ['gramo', 'gramos', 'g', 'gr', 'grs'] },
+            { estandar: 'Mililitro', variantes: ['mililitro', 'mililitros', 'ml', 'mls', 'cc'] },
+            { estandar: 'Unidad', variantes: ['unidad', 'unidades', 'un', 'und', 'u'] },
+            { estandar: 'Cucharada', variantes: ['cucharada', 'cucharadas', 'cda', 'cdas'] },
+            { estandar: 'Cucharadita', variantes: ['cucharadita', 'cucharaditas', 'cdta', 'cdtas'] },
+            { estandar: 'Taza', variantes: ['taza', 'tazas'] }
+        ],
+        filasCabeceraIgnoradas: 0,
+        filasEscaneoCabecera: 15,
+        unidadPorDefecto: 'UNIDAD'
+    };
+}
+
+let ajustesProcesamiento = crearAjustesPorDefecto();
+let mapeoInsumos = crearMapeoPorDefecto();
 
 let ajustesCargadosPromise = null;
 
@@ -849,23 +882,10 @@ async function inicializarVistaCompacta() {
 
 // --- AJUSTES DE PROCESAMIENTO ---
 // Preferencias configurables desde el modal del mismo nombre. Se persisten en
-// config.json y se cargan al iniciar la app, pero todavía no se aplican a
-// ningún cálculo ni al procesamiento de hojas.
+// config.json y las listas de detección las consume el backend al procesar.
 
-const AJUSTES_POR_DEFECTO = {
-    delayAutoprocesadoMs: 500,
-    sinonimosIngrediente: [],
-    sinonimosUnidad: [],
-    sinonimosCantidad: [],
-    filasCabeceraIgnoradas: 0,
-    unidadPorDefecto: 'UNIDAD',
-    tema: 'claro',
-    formatoNumeros: 'punto',
-    prefijoExportacion: 'Resumen_',
-    incluirColoresExportacion: true,
-    columnasExportacion: ['ingrediente', 'codigo', 'unidad', 'cantidad', 'total', 'comentarios'],
-    ingredientesNoEncontrados: 'omitir'
-};
+const AJUSTES_POR_DEFECTO = crearAjustesPorDefecto();
+const MAPEO_POR_DEFECTO = crearMapeoPorDefecto();
 
 // Opciones de los selects. `valor` es lo que se guarda en config.json y
 // `texto` lo que ve el usuario.
@@ -983,18 +1003,6 @@ function normalizarAjustes(valores) {
             fuente.delayAutoprocesadoMs,
             AJUSTES_POR_DEFECTO.delayAutoprocesadoMs
         ),
-        sinonimosIngrediente: listaSinonimos(fuente.sinonimosIngrediente),
-        sinonimosUnidad: listaSinonimos(fuente.sinonimosUnidad),
-        sinonimosCantidad: listaSinonimos(fuente.sinonimosCantidad),
-        filasCabeceraIgnoradas: enteroNoNegativo(
-            fuente.filasCabeceraIgnoradas,
-            AJUSTES_POR_DEFECTO.filasCabeceraIgnoradas
-        ),
-        unidadPorDefecto: opcionPermitida(
-            fuente.unidadPorDefecto,
-            UNIDADES_AJUSTES,
-            AJUSTES_POR_DEFECTO.unidadPorDefecto
-        ),
         tema: opcionPermitida(fuente.tema, TEMAS_AJUSTES, AJUSTES_POR_DEFECTO.tema),
         formatoNumeros: opcionPermitida(
             fuente.formatoNumeros,
@@ -1020,16 +1028,212 @@ function normalizarAjustes(valores) {
     };
 }
 
+// Normaliza las asociaciones alias → nombre canónico: sin vacíos ni alias
+// duplicados (sin distinguir mayúsculas).
+function asociacionesIngredientes(valor) {
+    const origen = Array.isArray(valor) ? valor : [];
+    const vistos = new Set();
+    const lista = [];
+
+    origen.forEach(item => {
+        if (!item || typeof item !== 'object') return;
+
+        const alias = normalizarValorLista(item.alias);
+        const nombre = normalizarValorLista(item.nombre);
+
+        if (!alias || !nombre) return;
+
+        const clave = alias.toLowerCase();
+        if (vistos.has(clave)) return;
+
+        vistos.add(clave);
+        lista.push({ alias, nombre });
+    });
+
+    return lista;
+}
+
+// Normaliza la tabla de equivalencias de unidades: una forma estándar por
+// entrada y variantes sin vacíos ni duplicados. Una variante solo puede
+// pertenecer a una unidad (la primera que la declare gana).
+function normalizarUnidadesMapeo(valor) {
+    const origen = Array.isArray(valor) ? valor : [];
+
+    // Primero se recogen los estándares: ninguna variante puede coincidir con
+    // la unidad estándar de OTRA fila (sí puede repetir la suya, que es
+    // redundante pero se respeta tal como la escribió el usuario).
+    const preparadas = [];
+    const estandares = new Set();
+
+    origen.forEach(item => {
+        if (!item || typeof item !== 'object') return;
+
+        const estandar = normalizarValorLista(item.estandar);
+        if (!estandar) return;
+
+        const claveEstandar = estandar.toLowerCase();
+        if (estandares.has(claveEstandar)) return;
+
+        estandares.add(claveEstandar);
+        preparadas.push({
+            estandar,
+            claveEstandar,
+            variantesOrigen: Array.isArray(item.variantes) ? item.variantes : []
+        });
+    });
+
+    const variantesUsadas = new Set();
+
+    return preparadas.map(unidad => {
+        const variantes = [];
+
+        unidad.variantesOrigen.forEach(variante => {
+            const limpia = normalizarValorLista(variante);
+            if (!limpia) return;
+
+            const clave = limpia.toLowerCase();
+            if (variantesUsadas.has(clave)) return;
+            if (estandares.has(clave) && clave !== unidad.claveEstandar) return;
+
+            variantesUsadas.add(clave);
+            variantes.push(limpia);
+        });
+
+        return { estandar: unidad.estandar, variantes };
+    });
+}
+
+function normalizarMapeoInsumos(valores) {
+    const fuente = valores && typeof valores === 'object' ? valores : {};
+
+    // Mapeo guardado por una versión anterior a las listas dinámicas: las
+    // listas nuevas pueden faltar y las viejas pueden estar vacías.
+    const esConfigHeredada =
+        !('sinonimosTotal' in fuente) && !('etiquetasCantidadParcial' in fuente);
+
+    // En un mapeo heredado, una lista vacía se completa con el valor
+    // recomendado; en uno nuevo, una lista vacía es una elección del usuario.
+    const listaConRecomendados = (valor, recomendados) => {
+        const lista = listaSinonimos(valor);
+
+        if (esConfigHeredada && lista.length === 0) {
+            return listaSinonimos(recomendados);
+        }
+
+        return lista;
+    };
+
+    // La tabla de unidades puede faltar en un mapeo guardado antes de esta
+    // función; un array vacío explícito sí se respeta.
+    const sinUnidades = !('unidades' in fuente);
+
+    return {
+        sinonimosIngrediente: listaConRecomendados(
+            fuente.sinonimosIngrediente,
+            MAPEO_POR_DEFECTO.sinonimosIngrediente
+        ),
+        sinonimosUnidad: listaConRecomendados(
+            fuente.sinonimosUnidad,
+            MAPEO_POR_DEFECTO.sinonimosUnidad
+        ),
+        sinonimosCantidad: listaConRecomendados(
+            fuente.sinonimosCantidad,
+            MAPEO_POR_DEFECTO.sinonimosCantidad
+        ),
+        sinonimosTotal: listaConRecomendados(
+            fuente.sinonimosTotal,
+            MAPEO_POR_DEFECTO.sinonimosTotal
+        ),
+        etiquetasCantidadParcial: listaConRecomendados(
+            fuente.etiquetasCantidadParcial,
+            MAPEO_POR_DEFECTO.etiquetasCantidadParcial
+        ),
+        prefijosCantidad: listaConRecomendados(
+            fuente.prefijosCantidad,
+            MAPEO_POR_DEFECTO.prefijosCantidad
+        ),
+        palabrasMonetarias: listaConRecomendados(
+            fuente.palabrasMonetarias,
+            MAPEO_POR_DEFECTO.palabrasMonetarias
+        ),
+        palabrasFilaIgnorada: listaConRecomendados(
+            fuente.palabrasFilaIgnorada,
+            MAPEO_POR_DEFECTO.palabrasFilaIgnorada
+        ),
+        asociacionesIngredientes: asociacionesIngredientes(
+            fuente.asociacionesIngredientes
+        ),
+        unidades: sinUnidades
+            ? normalizarUnidadesMapeo(MAPEO_POR_DEFECTO.unidades)
+            : normalizarUnidadesMapeo(fuente.unidades),
+        filasCabeceraIgnoradas: enteroNoNegativo(
+            fuente.filasCabeceraIgnoradas,
+            MAPEO_POR_DEFECTO.filasCabeceraIgnoradas
+        ),
+        filasEscaneoCabecera: enteroNoNegativo(
+            fuente.filasEscaneoCabecera,
+            MAPEO_POR_DEFECTO.filasEscaneoCabecera
+        ),
+        unidadPorDefecto: opcionPermitida(
+            fuente.unidadPorDefecto,
+            UNIDADES_AJUSTES,
+            MAPEO_POR_DEFECTO.unidadPorDefecto
+        )
+    };
+}
+
+// Devuelve las listas obligatorias del mapeo que quedaron vacías, con el mismo
+// criterio que valida el backend, para avisar antes de guardar.
+function faltantesMapeoInsumos(mapeo) {
+    const faltantes = [];
+
+    if (!mapeo.sinonimosIngrediente.length) {
+        faltantes.push('Sinónimos de ingrediente');
+    }
+    if (!mapeo.sinonimosUnidad.length) {
+        faltantes.push('Sinónimos de unidad');
+    }
+    if (
+        !mapeo.sinonimosCantidad.length
+        && !mapeo.sinonimosTotal.length
+        && !mapeo.etiquetasCantidadParcial.length
+    ) {
+        faltantes.push('Alguna regla de cantidad (sinónimos, total o etiquetas parciales)');
+    }
+    if (mapeo.filasEscaneoCabecera < 1) {
+        faltantes.push('Filas a examinar buscando la cabecera (mínimo 1)');
+    }
+
+    return faltantes;
+}
+
 async function cargarAjustesProcesamiento() {
-    try {
-        const guardados = await invoke('obtener_ajustes_procesamiento');
-        ajustesProcesamiento = normalizarAjustes(guardados);
-    } catch (error) {
-        console.error('No se pudieron leer los ajustes de procesamiento:', error);
+    const [resultadoAjustes, resultadoMapeo] = await Promise.allSettled([
+        invoke('obtener_ajustes_procesamiento'),
+        invoke('obtener_mapeo_insumos')
+    ]);
+
+    if (resultadoAjustes.status === 'fulfilled') {
+        ajustesProcesamiento = normalizarAjustes(resultadoAjustes.value);
+    } else {
+        console.error(
+            'No se pudieron leer los ajustes generales:',
+            resultadoAjustes.reason
+        );
         ajustesProcesamiento = normalizarAjustes(null);
     }
 
-    return ajustesProcesamiento;
+    if (resultadoMapeo.status === 'fulfilled') {
+        mapeoInsumos = normalizarMapeoInsumos(resultadoMapeo.value);
+    } else {
+        console.error(
+            'No se pudo leer el mapeo de insumos:',
+            resultadoMapeo.reason
+        );
+        mapeoInsumos = normalizarMapeoInsumos(null);
+    }
+
+    return { ajustes: ajustesProcesamiento, mapeo: mapeoInsumos };
 }
 
 function cerrarAjustesProcesamiento() {
@@ -1157,12 +1361,1075 @@ function crearCheckboxAjuste({ id, etiqueta, marcado, pista }) {
     return campo;
 }
 
-function valorSinonimosDesdeModal(id) {
-    const input = document.getElementById(id);
-    return input ? input.value : '';
+// --- EDITORES DE LISTAS DEL MODAL DE AJUSTES ---
+// Cada lista (sinónimos, etiquetas, prefijos…) se edita con chips: agregar,
+// editar en línea y eliminar. El estado vive en memoria y se refleja en un
+// input oculto con JSON, que es lo que lee `leerAjustesDesdeModal`.
+const editoresListaAjustes = new Map();
+
+function normalizarValorLista(valor) {
+    return String(valor ?? '').trim().replace(/\s+/g, ' ');
 }
 
-// Lee todos los controles del modal y los normaliza antes de persistirlos.
+function crearBotonLista(etiqueta, clase, onClick) {
+    const boton = document.createElement('button');
+    boton.type = 'button';
+    boton.className = clase;
+    boton.title = etiqueta;
+    boton.setAttribute('aria-label', etiqueta);
+    boton.textContent = etiqueta;
+    boton.addEventListener('click', onClick);
+    return boton;
+}
+
+function crearEditorListaAjuste({
+    id,
+    etiqueta,
+    valores = [],
+    valoresPorDefecto = [],
+    placeholder = 'Nuevo valor',
+    pista = '',
+    requerida = false,
+    sinCabecera = false
+}) {
+    const campo = document.createElement('div');
+    campo.className = sinCabecera
+        ? 'settings-field settings-list-field settings-list-field-plain'
+        : 'settings-field settings-list-field';
+
+    const cabecera = document.createElement('div');
+    cabecera.className = 'settings-label-row';
+
+    if (!sinCabecera) {
+        const label = document.createElement('span');
+        label.className = 'settings-label';
+        label.textContent = etiqueta;
+        cabecera.appendChild(label);
+
+        // Botón para volver a los valores que antes estaban fijos en el código.
+        if (Array.isArray(valoresPorDefecto) && valoresPorDefecto.length > 0) {
+            const btnRecomendados = crearBotonLista(
+                'Usar recomendados',
+                'settings-list-reset',
+                () => restaurar()
+            );
+            btnRecomendados.title = 'Restaura los valores recomendados de esta lista';
+            cabecera.appendChild(btnRecomendados);
+        }
+    }
+
+    // Fuente de verdad para `leerAjustesDesdeModal`.
+    const oculto = document.createElement('input');
+    oculto.type = 'hidden';
+    oculto.id = id;
+
+    const items = document.createElement('div');
+    items.className = 'settings-list-items';
+
+    const error = document.createElement('span');
+    error.className = 'settings-list-error';
+    error.hidden = true;
+
+    const filaAgregar = document.createElement('div');
+    filaAgregar.className = 'settings-list-add';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'settings-input';
+    input.placeholder = placeholder;
+    input.setAttribute('aria-label', `Nuevo valor para ${etiqueta}`);
+
+    const btnAgregar = crearBotonLista('Agregar', 'settings-list-add-btn', () => agregar());
+    filaAgregar.append(input, btnAgregar);
+
+    let lista = listaSinonimos(valores);
+    let indiceEnEdicion = null;
+
+    const sincronizar = () => {
+        oculto.value = JSON.stringify(lista);
+    };
+
+    const mostrarError = (texto) => {
+        error.textContent = texto;
+        error.hidden = !texto;
+    };
+
+    const agregar = () => {
+        const limpio = normalizarValorLista(input.value);
+
+        if (!limpio) {
+            mostrarError('Escribe un valor antes de agregarlo.');
+            input.focus();
+            return;
+        }
+
+        if (limpio.includes(',')) {
+            mostrarError('Cada valor va en su propio chip: no uses comas.');
+            input.focus();
+            return;
+        }
+
+        const duplicado = lista.some(valor => valor.toLowerCase() === limpio.toLowerCase());
+        if (duplicado) {
+            mostrarError('Ese valor ya existe en la lista.');
+            input.focus();
+            return;
+        }
+
+        lista.push(limpio);
+        input.value = '';
+        mostrarError('');
+        indiceEnEdicion = null;
+        render();
+        input.focus();
+    };
+
+    const render = () => {
+        items.innerHTML = '';
+
+        if (lista.length === 0) {
+            const vacio = document.createElement('span');
+            vacio.className = 'settings-list-empty';
+            vacio.textContent = requerida
+                ? 'Lista vacía: agrega al menos un valor.'
+                : 'Sin valores.';
+            items.appendChild(vacio);
+        }
+
+        lista.forEach((valor, indice) => {
+            const fila = document.createElement('div');
+            fila.className = 'settings-list-item';
+
+            if (indiceEnEdicion === indice) {
+                const inputEdicion = document.createElement('input');
+                inputEdicion.type = 'text';
+                inputEdicion.className = 'settings-input settings-list-edit-input';
+                inputEdicion.value = valor;
+                inputEdicion.setAttribute('aria-label', `Editar ${etiqueta}`);
+
+                const confirmar = () => {
+                    const limpio = normalizarValorLista(inputEdicion.value);
+
+                    if (!limpio) {
+                        mostrarError('El valor no puede quedar vacío.');
+                        inputEdicion.focus();
+                        return;
+                    }
+
+                    if (limpio.includes(',')) {
+                        mostrarError('Cada valor va en su propio chip: no uses comas.');
+                        inputEdicion.focus();
+                        return;
+                    }
+
+                    const duplicado = lista.some(
+                        (otro, otroIndice) =>
+                            otroIndice !== indice
+                            && otro.toLowerCase() === limpio.toLowerCase()
+                    );
+
+                    if (duplicado) {
+                        mostrarError('Ese valor ya existe en la lista.');
+                        inputEdicion.focus();
+                        return;
+                    }
+
+                    lista[indice] = limpio;
+                    indiceEnEdicion = null;
+                    mostrarError('');
+                    render();
+                };
+
+                const cancelar = () => {
+                    indiceEnEdicion = null;
+                    mostrarError('');
+                    render();
+                };
+
+                inputEdicion.addEventListener('keydown', (evento) => {
+                    // El modal guarda con Enter; aquí se intercepta para
+                    // confirmar solo la edición del chip.
+                    if (evento.key === 'Enter') {
+                        evento.preventDefault();
+                        evento.stopPropagation();
+                        confirmar();
+                    } else if (evento.key === 'Escape') {
+                        evento.preventDefault();
+                        evento.stopPropagation();
+                        cancelar();
+                    }
+                });
+
+                fila.append(
+                    inputEdicion,
+                    crearBotonLista('Guardar', 'settings-list-btn settings-list-btn-ok', confirmar),
+                    crearBotonLista('Cancelar', 'settings-list-btn', cancelar)
+                );
+
+                items.appendChild(fila);
+                // El foco se pone después de insertar en el documento.
+                queueMicrotask(() => inputEdicion.focus());
+                return;
+            }
+
+            const valorTexto = document.createElement('span');
+            valorTexto.className = 'settings-list-value';
+            valorTexto.textContent = valor;
+            valorTexto.title = valor;
+
+            fila.append(
+                valorTexto,
+                crearBotonLista('Editar', 'settings-list-btn', () => {
+                    indiceEnEdicion = indice;
+                    mostrarError('');
+                    render();
+                }),
+                crearBotonLista('Eliminar', 'settings-list-btn settings-list-btn-danger', () => {
+                    lista.splice(indice, 1);
+                    indiceEnEdicion = null;
+                    mostrarError('');
+                    render();
+                })
+            );
+
+            items.appendChild(fila);
+        });
+
+        sincronizar();
+    };
+
+    // Restaura la lista recomendada; la usan el botón de la cabecera y la
+    // tabla de pares del "Mapeo de Insumos".
+    const restaurar = () => {
+        lista = listaSinonimos(valoresPorDefecto);
+        indiceEnEdicion = null;
+        mostrarError('');
+        render();
+    };
+
+    input.addEventListener('keydown', (evento) => {
+        if (evento.key !== 'Enter') return;
+
+        // Evita que el Enter del modal guarde y cierre mientras se agrega.
+        evento.preventDefault();
+        evento.stopPropagation();
+        agregar();
+    });
+
+    const partes = sinCabecera
+        ? [oculto, items, filaAgregar, error]
+        : [cabecera, oculto, items, filaAgregar, error];
+    campo.append(...partes);
+
+    if (pista && !sinCabecera) {
+        const ayuda = document.createElement('span');
+        ayuda.className = 'settings-hint';
+        ayuda.textContent = pista;
+        campo.appendChild(ayuda);
+    }
+
+    // Permite que "Restablecer todo" vuelva a dibujar la lista.
+    editoresListaAjustes.set(id, {
+        establecer: (nuevos) => {
+            lista = listaSinonimos(nuevos);
+            indiceEnEdicion = null;
+            mostrarError('');
+            render();
+        },
+        restaurar
+    });
+
+    render();
+    return campo;
+}
+
+// --- EDITOR DE ASOCIACIONES DE INGREDIENTES ---
+// Pares "alias → nombre canónico" de la pestaña "Mapeo de Insumos".
+const editoresAsociacionesAjustes = new Map();
+
+function crearEditorAsociacionesAjuste({ id, etiqueta, valores = [], pista = '' }) {
+    const campo = document.createElement('div');
+    campo.className = 'settings-field settings-list-field';
+
+    const cabecera = document.createElement('div');
+    cabecera.className = 'settings-label-row';
+
+    const label = document.createElement('span');
+    label.className = 'settings-label';
+    label.textContent = etiqueta;
+    cabecera.appendChild(label);
+
+    // Fuente de verdad para `leerMapeoDesdeModal`.
+    const oculto = document.createElement('input');
+    oculto.type = 'hidden';
+    oculto.id = id;
+
+    const items = document.createElement('div');
+    items.className = 'settings-map-list';
+
+    const error = document.createElement('span');
+    error.className = 'settings-list-error';
+    error.hidden = true;
+
+    const filaAgregar = document.createElement('div');
+    filaAgregar.className = 'settings-map-add';
+
+    const inputAlias = document.createElement('input');
+    inputAlias.type = 'text';
+    inputAlias.className = 'settings-input';
+    inputAlias.placeholder = 'Alias en el Excel (ej. azucar)';
+    inputAlias.setAttribute('aria-label', 'Alias del ingrediente');
+
+    const inputNombre = document.createElement('input');
+    inputNombre.type = 'text';
+    inputNombre.className = 'settings-input';
+    inputNombre.placeholder = 'Nombre canónico (ej. Azúcar)';
+    inputNombre.setAttribute('aria-label', 'Nombre canónico del ingrediente');
+
+    const btnAgregar = crearBotonLista('Agregar', 'settings-list-add-btn', () => agregar());
+    filaAgregar.append(inputAlias, inputNombre, btnAgregar);
+
+    let lista = asociacionesIngredientes(valores);
+    let indiceEnEdicion = null;
+
+    const sincronizar = () => {
+        oculto.value = JSON.stringify(lista);
+    };
+
+    const mostrarError = (texto) => {
+        error.textContent = texto;
+        error.hidden = !texto;
+    };
+
+    const crearInput = (valor, placeholder, ariaLabel) => {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'settings-input settings-map-input';
+        input.value = valor;
+        input.placeholder = placeholder;
+        input.setAttribute('aria-label', ariaLabel);
+        return input;
+    };
+
+    const agregar = () => {
+        const alias = normalizarValorLista(inputAlias.value);
+        const nombre = normalizarValorLista(inputNombre.value);
+
+        if (!alias || !nombre) {
+            mostrarError('Completa el alias y el nombre canónico.');
+            (alias ? inputNombre : inputAlias).focus();
+            return;
+        }
+
+        const duplicado = lista.some(
+            asociacion => asociacion.alias.toLowerCase() === alias.toLowerCase()
+        );
+        if (duplicado) {
+            mostrarError('Ese alias ya tiene una asociación.');
+            inputAlias.focus();
+            return;
+        }
+
+        lista.push({ alias, nombre });
+        inputAlias.value = '';
+        inputNombre.value = '';
+        mostrarError('');
+        indiceEnEdicion = null;
+        render();
+        inputAlias.focus();
+    };
+
+    const render = () => {
+        items.innerHTML = '';
+
+        if (lista.length === 0) {
+            const vacio = document.createElement('span');
+            vacio.className = 'settings-list-empty';
+            vacio.textContent = 'Sin asociaciones: se usa el nombre tal como viene del Excel.';
+            items.appendChild(vacio);
+        }
+
+        lista.forEach((asociacion, indice) => {
+            const fila = document.createElement('div');
+            fila.className = 'settings-map-item';
+
+            if (indiceEnEdicion === indice) {
+                const inputAliasEdicion = crearInput(
+                    asociacion.alias,
+                    'Alias en el Excel',
+                    'Editar alias del ingrediente'
+                );
+                const inputNombreEdicion = crearInput(
+                    asociacion.nombre,
+                    'Nombre canónico',
+                    'Editar nombre canónico del ingrediente'
+                );
+
+                const confirmar = () => {
+                    const alias = normalizarValorLista(inputAliasEdicion.value);
+                    const nombre = normalizarValorLista(inputNombreEdicion.value);
+
+                    if (!alias || !nombre) {
+                        mostrarError('Completa el alias y el nombre canónico.');
+                        (alias ? inputNombreEdicion : inputAliasEdicion).focus();
+                        return;
+                    }
+
+                    const duplicado = lista.some(
+                        (otra, otroIndice) =>
+                            otroIndice !== indice
+                            && otra.alias.toLowerCase() === alias.toLowerCase()
+                    );
+                    if (duplicado) {
+                        mostrarError('Ese alias ya tiene una asociación.');
+                        inputAliasEdicion.focus();
+                        return;
+                    }
+
+                    lista[indice] = { alias, nombre };
+                    indiceEnEdicion = null;
+                    mostrarError('');
+                    render();
+                };
+
+                const cancelar = () => {
+                    indiceEnEdicion = null;
+                    mostrarError('');
+                    render();
+                };
+
+                [inputAliasEdicion, inputNombreEdicion].forEach(input => {
+                    input.addEventListener('keydown', (evento) => {
+                        if (evento.key === 'Enter') {
+                            evento.preventDefault();
+                            evento.stopPropagation();
+                            confirmar();
+                        } else if (evento.key === 'Escape') {
+                            evento.preventDefault();
+                            evento.stopPropagation();
+                            cancelar();
+                        }
+                    });
+                });
+
+                fila.append(
+                    inputAliasEdicion,
+                    inputNombreEdicion,
+                    crearBotonLista('Guardar', 'settings-list-btn settings-list-btn-ok', confirmar),
+                    crearBotonLista('Cancelar', 'settings-list-btn', cancelar)
+                );
+
+                items.appendChild(fila);
+                queueMicrotask(() => inputAliasEdicion.focus());
+                return;
+            }
+
+            const alias = document.createElement('span');
+            alias.className = 'settings-map-alias';
+            alias.textContent = asociacion.alias;
+            alias.title = asociacion.alias;
+
+            const flecha = document.createElement('span');
+            flecha.className = 'settings-map-arrow';
+            flecha.textContent = '→';
+            flecha.setAttribute('aria-hidden', 'true');
+
+            const nombre = document.createElement('span');
+            nombre.className = 'settings-map-name';
+            nombre.textContent = asociacion.nombre;
+            nombre.title = asociacion.nombre;
+
+            fila.append(
+                alias,
+                flecha,
+                nombre,
+                crearBotonLista('Editar', 'settings-list-btn', () => {
+                    indiceEnEdicion = indice;
+                    mostrarError('');
+                    render();
+                }),
+                crearBotonLista('Eliminar', 'settings-list-btn settings-list-btn-danger', () => {
+                    lista.splice(indice, 1);
+                    indiceEnEdicion = null;
+                    mostrarError('');
+                    render();
+                })
+            );
+
+            items.appendChild(fila);
+        });
+
+        sincronizar();
+    };
+
+    inputAlias.addEventListener('keydown', (evento) => {
+        if (evento.key !== 'Enter') return;
+        evento.preventDefault();
+        evento.stopPropagation();
+        agregar();
+    });
+
+    inputNombre.addEventListener('keydown', (evento) => {
+        if (evento.key !== 'Enter') return;
+        evento.preventDefault();
+        evento.stopPropagation();
+        agregar();
+    });
+
+    campo.append(cabecera, oculto, items, filaAgregar, error);
+
+    if (pista) {
+        const ayuda = document.createElement('span');
+        ayuda.className = 'settings-hint';
+        ayuda.textContent = pista;
+        campo.appendChild(ayuda);
+    }
+
+    editoresAsociacionesAjustes.set(id, {
+        establecer: (nuevos) => {
+            lista = asociacionesIngredientes(nuevos);
+            indiceEnEdicion = null;
+            mostrarError('');
+            render();
+        }
+    });
+
+    render();
+    return campo;
+}
+
+// --- TABLA DE PARES CONCEPTO → SINÓNIMOS ---
+// Cada fila muestra a la izquierda el concepto base y a la derecha sus
+// sinónimos como chips: la lista crece en vertical y no se desborda.
+function crearTablaParesAjustes(titulo, filas) {
+    const seccion = document.createElement('div');
+    seccion.className = 'settings-section';
+
+    const heading = document.createElement('div');
+    heading.className = 'settings-section-title';
+    heading.textContent = titulo;
+    seccion.appendChild(heading);
+
+    const tabla = document.createElement('div');
+    tabla.className = 'settings-pair-table';
+
+    const cabecera = document.createElement('div');
+    cabecera.className = 'settings-pair-head';
+    const conceptoHead = document.createElement('span');
+    conceptoHead.textContent = 'Concepto';
+    const valoresHead = document.createElement('span');
+    valoresHead.textContent = 'Sinónimos / variantes';
+    cabecera.append(conceptoHead, valoresHead);
+    tabla.appendChild(cabecera);
+
+    filas.forEach(fila => {
+        const row = document.createElement('div');
+        row.className = 'settings-pair-row';
+
+        const concepto = document.createElement('div');
+        concepto.className = 'settings-pair-concept';
+
+        const label = document.createElement('span');
+        label.className = 'settings-pair-label';
+        label.textContent = fila.concepto;
+        concepto.appendChild(label);
+
+        if (fila.requerida) {
+            const badge = document.createElement('span');
+            badge.className = 'settings-pair-requerido';
+            badge.textContent = 'obligatorio';
+            concepto.appendChild(badge);
+        }
+
+        if (fila.pista) {
+            const hint = document.createElement('span');
+            hint.className = 'settings-pair-hint';
+            hint.textContent = fila.pista;
+            concepto.appendChild(hint);
+        }
+
+        if (Array.isArray(fila.valoresPorDefecto) && fila.valoresPorDefecto.length > 0) {
+            const reset = document.createElement('button');
+            reset.type = 'button';
+            reset.className = 'settings-list-reset';
+            reset.textContent = 'Recomendados';
+            reset.title = `Restaura los valores recomendados de ${fila.concepto}`;
+            reset.addEventListener('click', () => {
+                editoresListaAjustes.get(fila.id)?.restaurar();
+            });
+            concepto.appendChild(reset);
+        }
+
+        const editor = crearEditorListaAjuste({
+            id: fila.id,
+            etiqueta: fila.concepto,
+            valores: fila.valores,
+            valoresPorDefecto: fila.valoresPorDefecto || [],
+            placeholder: fila.placeholder,
+            requerida: Boolean(fila.requerida),
+            sinCabecera: true
+        });
+
+        row.append(concepto, editor);
+        tabla.appendChild(row);
+    });
+
+    seccion.appendChild(tabla);
+    return seccion;
+}
+
+// --- TABLA DE EQUIVALENCIAS DE UNIDADES ---
+// Izquierda: unidad estándar. Derecha: variantes que se unifican a ella.
+const editoresUnidadesAjustes = new Map();
+
+function crearEditorUnidadesAjuste({ id, valores = [], valoresPorDefecto = [], pista = '' }) {
+    const campo = document.createElement('div');
+    campo.className = 'settings-field settings-list-field';
+
+    const cabecera = document.createElement('div');
+    cabecera.className = 'settings-label-row';
+
+    const label = document.createElement('span');
+    label.className = 'settings-label';
+    label.textContent = 'Unidades de medida';
+    cabecera.appendChild(label);
+
+    const btnRecomendados = document.createElement('button');
+    btnRecomendados.type = 'button';
+    btnRecomendados.className = 'settings-list-reset';
+    btnRecomendados.textContent = 'Usar recomendados';
+    btnRecomendados.title = 'Restaura las equivalencias recomendadas';
+    btnRecomendados.addEventListener('click', () => restaurar());
+    cabecera.appendChild(btnRecomendados);
+
+    // Fuente de verdad para `leerMapeoDesdeModal`.
+    const oculto = document.createElement('input');
+    oculto.type = 'hidden';
+    oculto.id = id;
+
+    const tabla = document.createElement('div');
+    tabla.className = 'settings-pair-table settings-unidades-table';
+
+    const cabeceraTabla = document.createElement('div');
+    cabeceraTabla.className = 'settings-pair-head';
+    const headEstandar = document.createElement('span');
+    headEstandar.textContent = 'Unidad estándar';
+    const headVariantes = document.createElement('span');
+    headVariantes.textContent = 'Variantes que se unifican';
+    cabeceraTabla.append(headEstandar, headVariantes);
+    tabla.appendChild(cabeceraTabla);
+
+    const filasEl = document.createElement('div');
+    filasEl.className = 'settings-pair-rows';
+    tabla.appendChild(filasEl);
+
+    const error = document.createElement('span');
+    error.className = 'settings-list-error';
+    error.hidden = true;
+
+    const filaAgregar = document.createElement('div');
+    filaAgregar.className = 'settings-map-add';
+
+    const inputEstandarNuevo = document.createElement('input');
+    inputEstandarNuevo.type = 'text';
+    inputEstandarNuevo.className = 'settings-input';
+    inputEstandarNuevo.placeholder = 'Nueva unidad estándar (ej. Litro)';
+    inputEstandarNuevo.setAttribute('aria-label', 'Nueva unidad estándar');
+
+    const btnAgregarUnidad = crearBotonLista(
+        'Agregar unidad',
+        'settings-list-add-btn',
+        () => agregarUnidad()
+    );
+    filaAgregar.append(inputEstandarNuevo, btnAgregarUnidad);
+
+    let unidades = normalizarUnidadesMapeo(valores);
+    let estandarEnEdicion = null;
+    // { unidad, variante } mientras se edita una variante concreta.
+    let varianteEnEdicion = null;
+
+    const sincronizar = () => {
+        oculto.value = JSON.stringify(unidades);
+    };
+
+    const mostrarError = (texto) => {
+        error.textContent = texto;
+        error.hidden = !texto;
+    };
+
+    const clave = (texto) => normalizarValorLista(texto).toLowerCase();
+
+    // Devuelve la unidad que ya usa ese texto (como estándar o variante),
+    // ignorando la entrada que se está editando.
+    const unidadQueUsa = (texto, ignorar = null) => {
+        const buscada = clave(texto);
+        if (!buscada) return null;
+
+        for (let indice = 0; indice < unidades.length; indice++) {
+            const unidad = unidades[indice];
+            const esMismoEstandar = Boolean(
+                ignorar && ignorar.unidad === indice && ignorar.esEstandar
+            );
+
+            if (!esMismoEstandar && clave(unidad.estandar) === buscada) {
+                return unidad;
+            }
+
+            for (let v = 0; v < unidad.variantes.length; v++) {
+                const esMismaVariante = Boolean(
+                    ignorar && ignorar.unidad === indice && ignorar.variante === v
+                );
+                if (!esMismaVariante && clave(unidad.variantes[v]) === buscada) {
+                    return unidad;
+                }
+            }
+        }
+
+        return null;
+    };
+
+    const render = () => {
+        filasEl.innerHTML = '';
+
+        if (unidades.length === 0) {
+            const vacio = document.createElement('div');
+            vacio.className = 'settings-pair-row settings-pair-empty';
+            vacio.textContent = 'Sin unidades configuradas: se muestran tal como vienen del Excel.';
+            filasEl.appendChild(vacio);
+        }
+
+        unidades.forEach((unidad, indice) => {
+            const fila = document.createElement('div');
+            fila.className = 'settings-pair-row';
+
+            // --- Izquierda: unidad estándar ---
+            const concepto = document.createElement('div');
+            concepto.className = 'settings-pair-concept';
+
+            if (estandarEnEdicion === indice) {
+                const inputEstandar = document.createElement('input');
+                inputEstandar.type = 'text';
+                inputEstandar.className = 'settings-input settings-map-input';
+                inputEstandar.value = unidad.estandar;
+                inputEstandar.setAttribute('aria-label', 'Editar unidad estándar');
+
+                const confirmar = () => {
+                    const valor = normalizarValorLista(inputEstandar.value);
+
+                    if (!valor) {
+                        mostrarError('La unidad estándar no puede quedar vacía.');
+                        inputEstandar.focus();
+                        return;
+                    }
+
+                    const dueno = unidadQueUsa(valor, { unidad: indice, esEstandar: true });
+                    if (dueno) {
+                        mostrarError(`"${valor}" ya está en uso por "${dueno.estandar}".`);
+                        inputEstandar.focus();
+                        return;
+                    }
+
+                    unidades[indice].estandar = valor;
+                    estandarEnEdicion = null;
+                    mostrarError('');
+                    render();
+                };
+
+                const cancelar = () => {
+                    estandarEnEdicion = null;
+                    mostrarError('');
+                    render();
+                };
+
+                inputEstandar.addEventListener('keydown', (evento) => {
+                    if (evento.key === 'Enter') {
+                        evento.preventDefault();
+                        evento.stopPropagation();
+                        confirmar();
+                    } else if (evento.key === 'Escape') {
+                        evento.preventDefault();
+                        evento.stopPropagation();
+                        cancelar();
+                    }
+                });
+
+                concepto.append(
+                    inputEstandar,
+                    crearBotonLista('Guardar', 'settings-list-btn settings-list-btn-ok', confirmar),
+                    crearBotonLista('Cancelar', 'settings-list-btn', cancelar)
+                );
+                queueMicrotask(() => inputEstandar.focus());
+            } else {
+                const estandar = document.createElement('span');
+                estandar.className = 'settings-pair-label';
+                estandar.textContent = unidad.estandar;
+                concepto.appendChild(estandar);
+                concepto.append(
+                    crearBotonLista('Renombrar', 'settings-list-btn', () => {
+                        estandarEnEdicion = indice;
+                        mostrarError('');
+                        render();
+                    }),
+                    crearBotonLista('Eliminar', 'settings-list-btn settings-list-btn-danger', () => {
+                        unidades.splice(indice, 1);
+                        estandarEnEdicion = null;
+                        varianteEnEdicion = null;
+                        mostrarError('');
+                        render();
+                    })
+                );
+            }
+
+            // --- Derecha: variantes ---
+            const variantesEl = document.createElement('div');
+            variantesEl.className = 'settings-unidad-variantes';
+
+            const chips = document.createElement('div');
+            chips.className = 'settings-list-items';
+
+            unidad.variantes.forEach((variante, indiceVariante) => {
+                const editando = varianteEnEdicion
+                    && varianteEnEdicion.unidad === indice
+                    && varianteEnEdicion.variante === indiceVariante;
+
+                const chip = document.createElement('div');
+                chip.className = 'settings-list-item';
+
+                if (editando) {
+                    const inputVariante = document.createElement('input');
+                    inputVariante.type = 'text';
+                    inputVariante.className = 'settings-input settings-list-edit-input';
+                    inputVariante.value = variante;
+                    inputVariante.setAttribute('aria-label', 'Editar variante de unidad');
+
+                    const confirmar = () => {
+                        const valor = normalizarValorLista(inputVariante.value);
+
+                        if (!valor) {
+                            mostrarError('La variante no puede quedar vacía.');
+                            inputVariante.focus();
+                            return;
+                        }
+
+                        const dueno = unidadQueUsa(valor, {
+                            unidad: indice,
+                            variante: indiceVariante
+                        });
+                        if (dueno) {
+                            mostrarError(`"${valor}" ya está en uso por "${dueno.estandar}".`);
+                            inputVariante.focus();
+                            return;
+                        }
+
+                        unidades[indice].variantes[indiceVariante] = valor;
+                        varianteEnEdicion = null;
+                        mostrarError('');
+                        render();
+                    };
+
+                    const cancelar = () => {
+                        varianteEnEdicion = null;
+                        mostrarError('');
+                        render();
+                    };
+
+                    inputVariante.addEventListener('keydown', (evento) => {
+                        if (evento.key === 'Enter') {
+                            evento.preventDefault();
+                            evento.stopPropagation();
+                            confirmar();
+                        } else if (evento.key === 'Escape') {
+                            evento.preventDefault();
+                            evento.stopPropagation();
+                            cancelar();
+                        }
+                    });
+
+                    chip.append(
+                        inputVariante,
+                        crearBotonLista('Guardar', 'settings-list-btn settings-list-btn-ok', confirmar),
+                        crearBotonLista('Cancelar', 'settings-list-btn', cancelar)
+                    );
+                    queueMicrotask(() => inputVariante.focus());
+                } else {
+                    const texto = document.createElement('span');
+                    texto.className = 'settings-list-value';
+                    texto.textContent = variante;
+                    texto.title = variante;
+
+                    chip.append(
+                        texto,
+                        crearBotonLista('Editar', 'settings-list-btn', () => {
+                            varianteEnEdicion = { unidad: indice, variante: indiceVariante };
+                            mostrarError('');
+                            render();
+                        }),
+                        crearBotonLista('Eliminar', 'settings-list-btn settings-list-btn-danger', () => {
+                            unidades[indice].variantes.splice(indiceVariante, 1);
+                            varianteEnEdicion = null;
+                            mostrarError('');
+                            render();
+                        })
+                    );
+                }
+
+                chips.appendChild(chip);
+            });
+
+            const agregarVarianteEl = document.createElement('div');
+            agregarVarianteEl.className = 'settings-list-add';
+
+            const inputVarianteNueva = document.createElement('input');
+            inputVarianteNueva.type = 'text';
+            inputVarianteNueva.className = 'settings-input';
+            inputVarianteNueva.placeholder = 'Nueva variante (ej. LT)';
+            inputVarianteNueva.setAttribute('aria-label', `Nueva variante para ${unidad.estandar}`);
+
+            const btnAgregarVariante = crearBotonLista(
+                'Agregar',
+                'settings-list-add-btn',
+                () => {
+                    const valor = normalizarValorLista(inputVarianteNueva.value);
+
+                    if (!valor) {
+                        mostrarError('Escribe una variante antes de agregarla.');
+                        inputVarianteNueva.focus();
+                        return;
+                    }
+
+                    const dueno = unidadQueUsa(valor);
+                    if (dueno) {
+                        mostrarError(`"${valor}" ya está en uso por "${dueno.estandar}".`);
+                        inputVarianteNueva.focus();
+                        return;
+                    }
+
+                    unidades[indice].variantes.push(valor);
+                    inputVarianteNueva.value = '';
+                    mostrarError('');
+                    render();
+                }
+            );
+
+            inputVarianteNueva.addEventListener('keydown', (evento) => {
+                if (evento.key !== 'Enter') return;
+                evento.preventDefault();
+                evento.stopPropagation();
+                btnAgregarVariante.click();
+            });
+
+            agregarVarianteEl.append(inputVarianteNueva, btnAgregarVariante);
+            variantesEl.append(chips, agregarVarianteEl);
+
+            fila.append(concepto, variantesEl);
+            filasEl.appendChild(fila);
+        });
+
+        sincronizar();
+    };
+
+    const agregarUnidad = () => {
+        const valor = normalizarValorLista(inputEstandarNuevo.value);
+
+        if (!valor) {
+            mostrarError('Escribe la unidad estándar.');
+            inputEstandarNuevo.focus();
+            return;
+        }
+
+        const dueno = unidadQueUsa(valor);
+        if (dueno) {
+            mostrarError(`"${valor}" ya está en uso por "${dueno.estandar}".`);
+            inputEstandarNuevo.focus();
+            return;
+        }
+
+        unidades.push({ estandar: valor, variantes: [] });
+        inputEstandarNuevo.value = '';
+        mostrarError('');
+        render();
+    };
+
+    inputEstandarNuevo.addEventListener('keydown', (evento) => {
+        if (evento.key !== 'Enter') return;
+        evento.preventDefault();
+        evento.stopPropagation();
+        agregarUnidad();
+    });
+
+    const restaurar = () => {
+        unidades = normalizarUnidadesMapeo(valoresPorDefecto);
+        estandarEnEdicion = null;
+        varianteEnEdicion = null;
+        mostrarError('');
+        render();
+    };
+
+    campo.append(cabecera, oculto, tabla, filaAgregar, error);
+
+    if (pista) {
+        const ayuda = document.createElement('span');
+        ayuda.className = 'settings-hint';
+        ayuda.textContent = pista;
+        campo.appendChild(ayuda);
+    }
+
+    editoresUnidadesAjustes.set(id, {
+        establecer: (nuevos) => {
+            unidades = normalizarUnidadesMapeo(nuevos);
+            estandarEnEdicion = null;
+            varianteEnEdicion = null;
+            mostrarError('');
+            render();
+        },
+        restaurar
+    });
+
+    render();
+    return campo;
+}
+
+function valorListaDesdeModal(id) {
+    const input = document.getElementById(id);
+    if (!input) return [];
+
+    try {
+        const valor = JSON.parse(input.value);
+        return Array.isArray(valor) ? valor : [];
+    } catch (error) {
+        console.error(`Lista de ajustes ilegible (${id}):`, error);
+        return [];
+    }
+}
+
+function valorAsociacionesDesdeModal(id) {
+    const input = document.getElementById(id);
+    if (!input) return [];
+
+    try {
+        const valor = JSON.parse(input.value);
+        return Array.isArray(valor) ? valor : [];
+    } catch (error) {
+        console.error(`Asociaciones de ajustes ilegibles (${id}):`, error);
+        return [];
+    }
+}
+
+function valorUnidadesDesdeModal(id) {
+    const input = document.getElementById(id);
+    if (!input) return [];
+
+    try {
+        const valor = JSON.parse(input.value);
+        return Array.isArray(valor) ? valor : [];
+    } catch (error) {
+        console.error(`Tabla de unidades ilegible (${id}):`, error);
+        return [];
+    }
+}
+
+// Lee los controles generales del modal (General, Interfaz, Exportación y
+// Sistema) y los normaliza antes de persistirlos.
 function leerAjustesDesdeModal() {
     const columnas = {};
 
@@ -1173,11 +2440,6 @@ function leerAjustesDesdeModal() {
 
     return normalizarAjustes({
         delayAutoprocesadoMs: document.getElementById('ajusteDelayMs')?.value,
-        sinonimosIngrediente: valorSinonimosDesdeModal('ajusteSinonimosIngrediente'),
-        sinonimosUnidad: valorSinonimosDesdeModal('ajusteSinonimosUnidad'),
-        sinonimosCantidad: valorSinonimosDesdeModal('ajusteSinonimosCantidad'),
-        filasCabeceraIgnoradas: document.getElementById('ajusteFilasCabecera')?.value,
-        unidadPorDefecto: document.getElementById('ajusteUnidadPorDefecto')?.value,
         tema: document.getElementById('ajusteTema')?.value,
         formatoNumeros: document.getElementById('ajusteFormatoNumeros')?.value,
         prefijoExportacion: document.getElementById('ajustePrefijoExportacion')?.value,
@@ -1189,7 +2451,26 @@ function leerAjustesDesdeModal() {
     });
 }
 
-// Vuelca el estado global en los controles ya dibujados (se usa al restablecer).
+// Lee exclusivamente los controles de la pestaña "Mapeo de Insumos".
+function leerMapeoDesdeModal() {
+    return normalizarMapeoInsumos({
+        sinonimosIngrediente: valorListaDesdeModal('mapeoSinonimosIngrediente'),
+        sinonimosUnidad: valorListaDesdeModal('mapeoSinonimosUnidad'),
+        sinonimosCantidad: valorListaDesdeModal('mapeoSinonimosCantidad'),
+        sinonimosTotal: valorListaDesdeModal('mapeoSinonimosTotal'),
+        etiquetasCantidadParcial: valorListaDesdeModal('mapeoEtiquetasCantidadParcial'),
+        prefijosCantidad: valorListaDesdeModal('mapeoPrefijosCantidad'),
+        palabrasMonetarias: valorListaDesdeModal('mapeoPalabrasMonetarias'),
+        palabrasFilaIgnorada: valorListaDesdeModal('mapeoPalabrasFilaIgnorada'),
+        asociacionesIngredientes: valorAsociacionesDesdeModal('mapeoAsociacionesIngredientes'),
+        unidades: valorUnidadesDesdeModal('mapeoUnidades'),
+        filasCabeceraIgnoradas: document.getElementById('mapeoFilasCabecera')?.value,
+        filasEscaneoCabecera: document.getElementById('mapeoFilasEscaneo')?.value,
+        unidadPorDefecto: document.getElementById('mapeoUnidadPorDefecto')?.value
+    });
+}
+
+// Vuelca el estado general en los controles ya dibujados (se usa al restablecer).
 function volcarAjustesEnModal() {
     const asignarValor = (id, valor) => {
         const control = document.getElementById(id);
@@ -1202,11 +2483,6 @@ function volcarAjustesEnModal() {
     };
 
     asignarValor('ajusteDelayMs', String(ajustesProcesamiento.delayAutoprocesadoMs));
-    asignarValor('ajusteSinonimosIngrediente', ajustesProcesamiento.sinonimosIngrediente.join(', '));
-    asignarValor('ajusteSinonimosUnidad', ajustesProcesamiento.sinonimosUnidad.join(', '));
-    asignarValor('ajusteSinonimosCantidad', ajustesProcesamiento.sinonimosCantidad.join(', '));
-    asignarValor('ajusteFilasCabecera', String(ajustesProcesamiento.filasCabeceraIgnoradas));
-    asignarValor('ajusteUnidadPorDefecto', ajustesProcesamiento.unidadPorDefecto);
     asignarValor('ajusteTema', ajustesProcesamiento.tema);
     asignarValor('ajusteFormatoNumeros', ajustesProcesamiento.formatoNumeros);
     asignarValor('ajustePrefijoExportacion', ajustesProcesamiento.prefijoExportacion);
@@ -1222,6 +2498,46 @@ function volcarAjustesEnModal() {
             ajustesProcesamiento.columnasExportacion.includes(columna.id)
         );
     });
+}
+
+// Vuelca el estado del mapeo en la pestaña "Mapeo de Insumos".
+function volcarMapeoEnModal() {
+    const asignarValor = (id, valor) => {
+        const control = document.getElementById(id);
+        if (control) control.value = valor;
+    };
+
+    const asignarLista = (id, valores) => {
+        const editor = editoresListaAjustes.get(id);
+        if (editor) editor.establecer(valores);
+        else asignarValor(id, JSON.stringify(valores));
+    };
+
+    const asignarAsociaciones = (id, valores) => {
+        const editor = editoresAsociacionesAjustes.get(id);
+        if (editor) editor.establecer(valores);
+        else asignarValor(id, JSON.stringify(valores));
+    };
+
+    const asignarUnidades = (id, valores) => {
+        const editor = editoresUnidadesAjustes.get(id);
+        if (editor) editor.establecer(valores);
+        else asignarValor(id, JSON.stringify(valores));
+    };
+
+    asignarLista('mapeoSinonimosIngrediente', mapeoInsumos.sinonimosIngrediente);
+    asignarLista('mapeoSinonimosUnidad', mapeoInsumos.sinonimosUnidad);
+    asignarLista('mapeoSinonimosCantidad', mapeoInsumos.sinonimosCantidad);
+    asignarLista('mapeoSinonimosTotal', mapeoInsumos.sinonimosTotal);
+    asignarLista('mapeoEtiquetasCantidadParcial', mapeoInsumos.etiquetasCantidadParcial);
+    asignarLista('mapeoPrefijosCantidad', mapeoInsumos.prefijosCantidad);
+    asignarLista('mapeoPalabrasMonetarias', mapeoInsumos.palabrasMonetarias);
+    asignarLista('mapeoPalabrasFilaIgnorada', mapeoInsumos.palabrasFilaIgnorada);
+    asignarAsociaciones('mapeoAsociacionesIngredientes', mapeoInsumos.asociacionesIngredientes);
+    asignarUnidades('mapeoUnidades', mapeoInsumos.unidades);
+    asignarValor('mapeoFilasCabecera', String(mapeoInsumos.filasCabeceraIgnoradas));
+    asignarValor('mapeoFilasEscaneo', String(mapeoInsumos.filasEscaneoCabecera));
+    asignarValor('mapeoUnidadPorDefecto', mapeoInsumos.unidadPorDefecto);
 }
 
 // Barra de pestañas + paneles. Se ocultan por clase porque el overlay usa
@@ -1324,15 +2640,22 @@ async function restablecerAjustesDesdeModal() {
 
     if (!confirmar) return;
 
-    const porDefecto = normalizarAjustes(AJUSTES_POR_DEFECTO);
+    const ajustesPorDefecto = normalizarAjustes(AJUSTES_POR_DEFECTO);
+    const mapeoPorDefecto = normalizarMapeoInsumos(MAPEO_POR_DEFECTO);
 
     try {
-        await invoke('guardar_ajustes_procesamiento', { ajustes: porDefecto });
-        ajustesProcesamiento = porDefecto;
+        await Promise.all([
+            invoke('guardar_ajustes_procesamiento', { ajustes: ajustesPorDefecto }),
+            invoke('guardar_mapeo_insumos', { mapeo: mapeoPorDefecto })
+        ]);
+
+        ajustesProcesamiento = ajustesPorDefecto;
+        mapeoInsumos = mapeoPorDefecto;
         volcarAjustesEnModal();
+        volcarMapeoEnModal();
 
         await window.__TAURI__.dialog.message(
-            'Los ajustes volvieron a sus valores por defecto.',
+            'Los ajustes generales y el mapeo de insumos volvieron a sus valores por defecto.',
             { title: 'Ajustes restablecidos', kind: 'info' }
         );
     } catch (error) {
@@ -1347,19 +2670,41 @@ async function restablecerAjustesDesdeModal() {
 async function guardarAjustesDesdeModal() {
     const guardarBtn = document.getElementById('btnGuardarAjustes');
     const nuevosAjustes = leerAjustesDesdeModal();
+    const nuevoMapeo = leerMapeoDesdeModal();
+
+    // Validación en la interfaz con el mismo criterio que el backend, para no
+    // guardar un mapeo que luego rompa la lectura de los Excel.
+    const faltantes = faltantesMapeoInsumos(nuevoMapeo);
+    if (faltantes.length > 0) {
+        await window.__TAURI__.dialog.message(
+            'No se puede guardar el Mapeo de Insumos porque falta configuración obligatoria:\n\n- '
+                + faltantes.join('\n- ')
+                + '\n\nAgrega al menos un valor en cada lista.',
+            { title: 'Revisa el Mapeo de Insumos', kind: 'warning' }
+        );
+        return;
+    }
 
     if (guardarBtn) guardarBtn.disabled = true;
 
     try {
-        await invoke('guardar_ajustes_procesamiento', {
-            ajustes: nuevosAjustes
-        });
+        // Cada configuración se persiste en su propia clave de config.json.
+        await Promise.all([
+            invoke('guardar_ajustes_procesamiento', { ajustes: nuevosAjustes }),
+            invoke('guardar_mapeo_insumos', { mapeo: nuevoMapeo })
+        ]);
 
         ajustesProcesamiento = nuevosAjustes;
+        mapeoInsumos = nuevoMapeo;
 
         cerrarAjustesProcesamiento();
+
+        // Las reglas nuevas se aplican de inmediato a lo ya seleccionado.
+        if (document.querySelector('.chk-sheet:checked')) {
+            solicitarProcesamientoHojas({ inmediato: true, silencioso: true });
+        }
     } catch (error) {
-        console.error('No se pudieron guardar los ajustes de procesamiento:', error);
+        console.error('No se pudieron guardar los ajustes o el mapeo:', error);
         if (guardarBtn) guardarBtn.disabled = false;
 
         await window.__TAURI__.dialog.message(
@@ -1417,27 +2762,27 @@ async function abrirAjustesProcesamiento() {
     const titulo = document.createElement('div');
     titulo.className = 'colors-modal-title';
     titulo.id = 'ajustesTitulo';
-    titulo.textContent = 'Ajustes de Procesamiento';
+    titulo.textContent = 'Ajustes';
 
     const subtitulo = document.createElement('span');
     subtitulo.className = 'colors-modal-subtitle';
-    subtitulo.textContent = 'Preferencias guardadas en config.json';
+    subtitulo.textContent = 'Preferencias generales y mapeo de insumos · config.json';
     titulo.appendChild(subtitulo);
 
     const cerrarBtn = document.createElement('button');
     cerrarBtn.type = 'button';
     cerrarBtn.className = 'colors-modal-close';
     cerrarBtn.title = 'Cerrar';
-    cerrarBtn.setAttribute('aria-label', 'Cerrar ajustes de procesamiento');
+    cerrarBtn.setAttribute('aria-label', 'Cerrar ajustes');
     cerrarBtn.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
     cerrarBtn.addEventListener('click', cerrarAjustesProcesamiento);
 
     header.append(titulo, cerrarBtn);
 
-    // --- Pestaña "Procesamiento" ---
-    const gridProcesamiento = document.createElement('div');
-    gridProcesamiento.className = 'settings-grid';
-    gridProcesamiento.append(
+    // --- Pestaña "General" ---
+    const gridGeneral = document.createElement('div');
+    gridGeneral.className = 'settings-grid';
+    gridGeneral.append(
         crearCampoAjuste({
             id: 'ajusteDelayMs',
             etiqueta: 'Delay de autoprocesado (ms)',
@@ -1446,47 +2791,154 @@ async function abrirAjustesProcesamiento() {
             min: 0,
             step: 100,
             pista: 'Espera antes de procesar automáticamente. Ej: 500.'
-        }),
-        crearCampoAjuste({
-            id: 'ajusteFilasCabecera',
-            etiqueta: 'Ignorar las primeras N filas',
-            tipo: 'number',
-            valor: String(ajustesProcesamiento.filasCabeceraIgnoradas),
-            min: 0,
-            step: 1,
-            pista: 'Filas de cabecera que se saltean al leer los datos.'
-        }),
-        crearSelectAjuste({
-            id: 'ajusteUnidadPorDefecto',
-            etiqueta: 'Unidad por defecto',
-            valor: ajustesProcesamiento.unidadPorDefecto,
-            opciones: UNIDADES_AJUSTES,
-            pista: 'Se usa cuando el archivo no indica una unidad.'
         })
     );
 
-    const seccionSinonimos = seccionAjustes(
+    const notaGeneral = document.createElement('p');
+    notaGeneral.className = 'settings-note';
+    notaGeneral.textContent = 'Las reglas de columnas, filtros, cabeceras y asociaciones de ingredientes están en la pestaña "Mapeo de Insumos".';
+
+    // --- Pestaña "Mapeo de Insumos" ---
+    const notaMapeo = document.createElement('p');
+    notaMapeo.className = 'settings-note';
+    notaMapeo.textContent = 'Estas reglas son las que usa el lector de Excel: definen qué columnas se reconocen, qué filas se descartan y cómo se normalizan los nombres y las unidades de los insumos.';
+
+    const seccionColumnasMapeo = crearTablaParesAjustes(
         'Sinónimos de columnas',
+        [
+            {
+                concepto: 'Ingrediente',
+                id: 'mapeoSinonimosIngrediente',
+                valores: mapeoInsumos.sinonimosIngrediente,
+                valoresPorDefecto: MAPEO_POR_DEFECTO.sinonimosIngrediente,
+                placeholder: 'ej. producto',
+                pista: 'La columna se reconoce si la cabecera contiene alguno de estos valores.',
+                requerida: true
+            },
+            {
+                concepto: 'Unidad',
+                id: 'mapeoSinonimosUnidad',
+                valores: mapeoInsumos.sinonimosUnidad,
+                valoresPorDefecto: MAPEO_POR_DEFECTO.sinonimosUnidad,
+                placeholder: 'ej. medida',
+                pista: 'Sinónimos aceptados para la columna de unidad de medida.',
+                requerida: true
+            },
+            {
+                concepto: 'Cantidad',
+                id: 'mapeoSinonimosCantidad',
+                valores: mapeoInsumos.sinonimosCantidad,
+                valoresPorDefecto: MAPEO_POR_DEFECTO.sinonimosCantidad,
+                placeholder: 'ej. qty',
+                pista: 'Columnas de cantidad genéricas, cuando no hay desglose.'
+            },
+            {
+                concepto: 'Total',
+                id: 'mapeoSinonimosTotal',
+                valores: mapeoInsumos.sinonimosTotal,
+                valoresPorDefecto: MAPEO_POR_DEFECTO.sinonimosTotal,
+                placeholder: 'ej. total final',
+                pista: 'Columna autoritativa de cantidad total; se compara por igualdad exacta.'
+            }
+        ]
+    );
+
+    const seccionCantidadesMapeo = crearTablaParesAjustes(
+        'Desglose de cantidades',
+        [
+            {
+                concepto: 'Etiquetas parciales',
+                id: 'mapeoEtiquetasCantidadParcial',
+                valores: mapeoInsumos.etiquetasCantidadParcial,
+                valoresPorDefecto: MAPEO_POR_DEFECTO.etiquetasCantidadParcial,
+                placeholder: 'ej. x',
+                pista: 'Columnas que se suman entre sí: A, B, C, TP, TA… (al menos una regla de cantidad es obligatoria).'
+            },
+            {
+                concepto: 'Prefijos',
+                id: 'mapeoPrefijosCantidad',
+                valores: mapeoInsumos.prefijosCantidad,
+                valoresPorDefecto: MAPEO_POR_DEFECTO.prefijosCantidad,
+                placeholder: 'ej. cant.',
+                pista: 'Prefijos que puede llevar una columna parcial: "Cantidad A", "Cant. B".'
+            }
+        ]
+    );
+
+    const seccionFiltrosMapeo = crearTablaParesAjustes(
+        'Filtros de lectura',
+        [
+            {
+                concepto: 'Palabras monetarias',
+                id: 'mapeoPalabrasMonetarias',
+                valores: mapeoInsumos.palabrasMonetarias,
+                valoresPorDefecto: MAPEO_POR_DEFECTO.palabrasMonetarias,
+                placeholder: 'ej. subtotal',
+                pista: 'Si la cabecera contiene una de estas palabras, la columna nunca se toma como cantidad.'
+            },
+            {
+                concepto: 'Palabras que descartan filas',
+                id: 'mapeoPalabrasFilaIgnorada',
+                valores: mapeoInsumos.palabrasFilaIgnorada,
+                valoresPorDefecto: MAPEO_POR_DEFECTO.palabrasFilaIgnorada,
+                placeholder: 'ej. nota',
+                pista: 'Filas cuyo nombre contenga estas palabras se omiten (cabeceras repetidas).'
+            }
+        ]
+    );
+
+    const seccionUnidadesMapeo = seccionAjustes(
+        'Unificación de unidades de medida',
+        crearEditorUnidadesAjuste({
+            id: 'mapeoUnidades',
+            valores: mapeoInsumos.unidades,
+            valoresPorDefecto: MAPEO_POR_DEFECTO.unidades,
+            pista: 'Cada variante se reemplaza por su unidad estándar antes de consolidar. Solo unifica escrituras: no convierte gramos en kilos.'
+        })
+    );
+
+    const gridLecturaMapeo = document.createElement('div');
+    gridLecturaMapeo.className = 'settings-grid';
+    gridLecturaMapeo.append(
         crearCampoAjuste({
-            id: 'ajusteSinonimosIngrediente',
-            etiqueta: 'Ingrediente',
-            valor: ajustesProcesamiento.sinonimosIngrediente.join(', '),
-            placeholder: 'ingrediente, producto, insumo',
-            pista: 'Separados por comas.'
+            id: 'mapeoFilasCabecera',
+            etiqueta: 'Ignorar las primeras N filas',
+            tipo: 'number',
+            valor: String(mapeoInsumos.filasCabeceraIgnoradas),
+            min: 0,
+            step: 1,
+            pista: 'Filas que se saltean antes de buscar la cabecera.'
         }),
         crearCampoAjuste({
-            id: 'ajusteSinonimosUnidad',
-            etiqueta: 'Unidad',
-            valor: ajustesProcesamiento.sinonimosUnidad.join(', '),
-            placeholder: 'unidad, medida, um',
-            pista: 'Separados por comas.'
+            id: 'mapeoFilasEscaneo',
+            etiqueta: 'Filas a examinar buscando la cabecera',
+            tipo: 'number',
+            valor: String(mapeoInsumos.filasEscaneoCabecera),
+            min: 1,
+            step: 1,
+            pista: 'Cuántas filas se revisan desde el inicio (por defecto 15).'
         }),
-        crearCampoAjuste({
-            id: 'ajusteSinonimosCantidad',
-            etiqueta: 'Cantidad',
-            valor: ajustesProcesamiento.sinonimosCantidad.join(', '),
-            placeholder: 'cantidad, qty, kilos',
-            pista: 'Separados por comas.'
+        crearSelectAjuste({
+            id: 'mapeoUnidadPorDefecto',
+            etiqueta: 'Unidad por defecto',
+            valor: mapeoInsumos.unidadPorDefecto,
+            opciones: UNIDADES_AJUSTES,
+            pista: 'Se usa cuando la fila no indica una unidad.'
+        })
+    );
+
+    const seccionLecturaMapeo = seccionAjustes(
+        'Lectura de la cabecera',
+        gridLecturaMapeo
+    );
+
+    const seccionAsociacionesMapeo = seccionAjustes(
+        'Asociaciones de ingredientes',
+        crearEditorAsociacionesAjuste({
+            id: 'mapeoAsociacionesIngredientes',
+            etiqueta: 'Alias en el Excel → nombre canónico',
+            valores: mapeoInsumos.asociacionesIngredientes,
+            pista: 'Cuando el Excel trae un nombre distinto (ej. "azucar"), se consolida y muestra con el nombre canónico (ej. "Azúcar").'
         })
     );
 
@@ -1569,13 +3021,26 @@ async function abrirAjustesProcesamiento() {
 
     const aviso = document.createElement('p');
     aviso.className = 'settings-note';
-    aviso.textContent = 'Por ahora estos valores solo se guardan: todavía no modifican el cálculo, el tema ni la exportación.';
+    aviso.textContent = 'Los ajustes generales y el mapeo de insumos se guardan por separado en config.json.';
 
     const pestanas = crearPestanasAjustes([
         {
-            id: 'procesamiento',
-            etiqueta: 'Procesamiento',
-            contenido: [gridProcesamiento, seccionSinonimos]
+            id: 'general',
+            etiqueta: 'General',
+            contenido: [gridGeneral, notaGeneral]
+        },
+        {
+            id: 'mapeo',
+            etiqueta: 'Mapeo de Insumos',
+            contenido: [
+                notaMapeo,
+                seccionColumnasMapeo,
+                seccionCantidadesMapeo,
+                seccionFiltrosMapeo,
+                seccionUnidadesMapeo,
+                seccionLecturaMapeo,
+                seccionAsociacionesMapeo
+            ]
         },
         {
             id: 'interfaz',
@@ -2079,6 +3544,23 @@ function grupoTieneFactorCalculo(secciones) {
 // Procesa las hojas marcadas y reemplaza la tabla. `idSolicitud` identifica
 // la selección vigente: si el usuario cambió de hojas mientras se leía el
 // Excel, el resultado viejo se descarta antes de tocar el estado o la UI.
+// Mensaje de estado dentro de la tabla. Se usa textContent (nunca innerHTML)
+// porque el texto puede venir de un error de Rust con nombres de archivo.
+function mostrarMensajeEnTabla(tbody, mensaje, { error = false } = {}) {
+    if (!tbody) return;
+
+    tbody.innerHTML = '';
+
+    const fila = document.createElement('tr');
+    const celda = document.createElement('td');
+    celda.colSpan = 6;
+    celda.className = error ? 'tabla-mensaje tabla-mensaje-error' : 'tabla-mensaje';
+    celda.textContent = mensaje;
+
+    fila.appendChild(celda);
+    tbody.appendChild(fila);
+}
+
 async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = {}) {
     const hojasMarcadas = document.querySelectorAll('.chk-sheet:checked');
 
@@ -2099,6 +3581,14 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
     const tbody = document.getElementById('tablaConsolidadaBody');
     if (!tbody) return false;
 
+    // Los ajustes se cargan al arrancar en paralelo: se espera a que terminen
+    // para no procesar con los valores por defecto.
+    try {
+        await (ajustesCargadosPromise || Promise.resolve());
+    } catch (error) {
+        console.error('No se pudieron cargar los ajustes antes de procesar:', error);
+    }
+
     // Agrupamos las hojas por archivo (ruta), igual que el botón Procesar.
     const hojasPorArchivo = {};
     hojasMarcadas.forEach(chk => {
@@ -2117,30 +3607,69 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
 
     let todosLosDatos = [];
     const datosPorArchivo = [];
+    // Advertencias y errores por archivo/hoja: se muestran al usuario en vez
+    // de quedar solo en la consola.
+    const advertencias = [];
+    const errores = [];
 
     try {
         for (const [ruta, hojas] of archivos) {
+            const nombreArchivo = ruta.split(/[\\/]/).pop() || ruta;
+
             try {
-                const datos = await invoke('procesar_hojas_excel', {
+                const resultado = await invoke('procesar_hojas_excel', {
                     ruta,
-                    nombresHojas: hojas
+                    nombresHojas: hojas,
+                    // El backend usa el mapeo segregado en lugar de listas fijas.
+                    mapeo: mapeoInsumos
                 });
 
                 // Llegó una selección más nueva: no seguir acumulando datos.
                 if (idSolicitud !== idSeleccionHojas) return false;
 
+                // Formato actual: { ingredientes, advertencias }. Se tolera el
+                // array plano por compatibilidad con una versión anterior.
+                const datos = Array.isArray(resultado?.ingredientes)
+                    ? resultado.ingredientes
+                    : (Array.isArray(resultado) ? resultado : []);
+
+                const advertenciasArchivo = Array.isArray(resultado?.advertencias)
+                    ? resultado.advertencias
+                    : [];
+
+                advertenciasArchivo.forEach(aviso => {
+                    advertencias.push(`${nombreArchivo}: ${aviso}`);
+                });
+
                 todosLosDatos = todosLosDatos.concat(datos);
                 datosPorArchivo.push({ ruta, datos });
             } catch (error) {
                 console.error(`Error procesando archivo ${ruta}:`, error);
+                errores.push(`${nombreArchivo}: ${String(error)}`);
             }
         }
 
         if (idSolicitud !== idSeleccionHojas) return false;
 
         if (todosLosDatos.length === 0) {
+            ingredientesConsolidados = [];
             ingredientesPorArchivo = [];
-            tbody.innerHTML = '<tr><td colspan="6">No se obtuvieron datos.</td></tr>';
+            ultimoCalculoVinculado = false;
+
+            const detalle = [...errores, ...advertencias].join('\n');
+            const mensaje = detalle || 'No se obtuvieron datos de las hojas seleccionadas.';
+
+            mostrarMensajeEnTabla(tbody, mensaje, { error: true });
+
+            // En autoprocesado (silencioso) no se abre un diálogo por cada
+            // pulsación; el mensaje ya queda visible en la tabla.
+            if (!silencioso) {
+                await window.__TAURI__.dialog.message(mensaje, {
+                    title: 'No se pudo procesar el Excel',
+                    kind: 'error'
+                });
+            }
+
             return false;
         }
 
@@ -2184,6 +3713,21 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
         ultimoCalculoVinculado = false;
 
         pintarTablaConsolidada(ingredientesConsolidados);
+
+        // Hojas omitidas o columnas no reconocidas: se avisa sin bloquear el
+        // resultado que sí se pudo leer.
+        const avisos = [...errores, ...advertencias];
+        if (avisos.length > 0) {
+            console.warn('Advertencias al procesar hojas:\n' + avisos.join('\n'));
+
+            if (!silencioso) {
+                await window.__TAURI__.dialog.message(
+                    'Se procesaron las hojas con advertencias:\n\n- ' + avisos.join('\n- '),
+                    { title: 'Advertencias al procesar', kind: 'warning' }
+                );
+            }
+        }
+
         return true;
     } catch (error) {
         console.error('Error al consolidar los ingredientes:', error);
@@ -2191,7 +3735,11 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
         if (idSolicitud === idSeleccionHojas) {
             ingredientesConsolidados = [];
             ingredientesPorArchivo = [];
-            tbody.innerHTML = '<tr><td colspan="6">No se pudieron consolidar los ingredientes.</td></tr>';
+            mostrarMensajeEnTabla(
+                tbody,
+                'No se pudieron consolidar los ingredientes: ' + String(error),
+                { error: true }
+            );
 
             await window.__TAURI__.dialog.message(
                 'No se pudo consolidar los ingredientes: ' + error,

@@ -1905,6 +1905,7 @@ body {
 .settings-tabbar {
     display: flex;
     flex-shrink: 0;
+    flex-wrap: wrap;
     gap: 2px;
     border-bottom: 1px solid var(--border);
 }
@@ -2055,6 +2056,292 @@ body {
     gap: 8px 12px;
 }
 
+/* --- Editor de listas (chips) del modal de ajustes --- */
+.settings-list-field {
+    gap: 6px;
+}
+
+/* Etiqueta de la lista + acción para volver a los valores recomendados */
+.settings-label-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.settings-list-reset {
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 10.5px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.settings-list-reset:hover {
+    color: var(--accent-strong);
+}
+
+/* --- Asociaciones de ingredientes: alias → nombre canónico --- */
+.settings-map-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.settings-map-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px 5px 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+}
+
+.settings-map-alias,
+.settings-map-name {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+}
+
+.settings-map-alias {
+    color: var(--text-muted);
+}
+
+.settings-map-name {
+    color: var(--text);
+    font-weight: 500;
+}
+
+.settings-map-arrow {
+    color: var(--text-faint);
+    font-size: 12px;
+}
+
+.settings-map-input {
+    flex: 1 1 130px;
+    min-width: 100px;
+    padding: 4px 6px;
+}
+
+.settings-map-add {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 6px;
+    align-items: center;
+}
+
+/* --- Tablas de pares: concepto (izquierda) → sinónimos (derecha) --- */
+.settings-pair-table {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.settings-pair-head,
+.settings-pair-row {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr);
+    gap: 12px;
+    padding: 8px 10px;
+}
+
+.settings-pair-head {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.settings-pair-row + .settings-pair-row {
+    border-top: 1px solid var(--border);
+}
+
+.settings-pair-concept {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    min-width: 0;
+}
+
+.settings-pair-label {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.settings-pair-requerido {
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.settings-pair-hint {
+    color: var(--text-faint);
+    font-size: 10.5px;
+    line-height: 1.35;
+}
+
+.settings-pair-row .settings-list-field-plain {
+    min-width: 0;
+    gap: 4px;
+}
+
+.settings-pair-empty {
+    grid-column: 1 / -1;
+    color: var(--text-faint);
+    font-size: 11px;
+    font-style: italic;
+}
+
+.settings-unidad-variantes {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+@media (max-width: 520px) {
+    .settings-pair-head { display: none; }
+    .settings-pair-row { grid-template-columns: 1fr; gap: 6px; }
+}
+
+.settings-list-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 26px;
+}
+
+.settings-list-item {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    max-width: 100%;
+    padding: 2px 4px 2px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+}
+
+.settings-list-value {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text);
+}
+
+.settings-list-btn {
+    padding: 2px 6px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 10.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-list-btn:hover {
+    border-color: var(--border);
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.settings-list-btn-ok {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.settings-list-btn-danger:hover {
+    border-color: #fecdca;
+    background: #fef3f2;
+    color: #b42318;
+}
+
+.settings-list-add {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.settings-list-add .settings-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.settings-list-add-btn {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-list-add-btn:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.settings-list-edit-input {
+    min-width: 120px;
+    padding: 3px 6px;
+}
+
+.settings-list-empty {
+    padding: 4px 0;
+    color: var(--text-faint);
+    font-size: 11px;
+    font-style: italic;
+}
+
+.settings-list-error {
+    color: #b42318;
+    font-size: 10.5px;
+}
+
+/* Mensajes de estado/error dentro de la tabla consolidada */
+.tabla-mensaje {
+    padding: 18px 12px;
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.tabla-mensaje-error {
+    color: #b42318;
+}
+
 .settings-system-actions {
     display: flex;
     flex-wrap: wrap;
@@ -2127,6 +2414,7 @@ body {
     .settings-grid,
     .settings-check-grid { grid-template-columns: 1fr; }
     .settings-tab { padding: 8px 8px; }
+    .settings-map-add { grid-template-columns: 1fr; }
 }
 
 

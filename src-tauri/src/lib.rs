@@ -64,6 +64,8 @@ pub fn run() {
             autoprocesado::guardar_auto_procesar,
             ajustes::obtener_ajustes_procesamiento,
             ajustes::guardar_ajustes_procesamiento,
+            ajustes::obtener_mapeo_insumos,
+            ajustes::guardar_mapeo_insumos,
             ajustes::abrir_carpeta_datos
         ])
         .run(tauri::generate_context!())

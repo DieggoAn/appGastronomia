@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use tauri_plugin_store::StoreExt;
+use crate::ajustes::{AsociacionIngrediente, MapeoInsumos, UnidadEquivalencia};
 use crate::secciones::Seccion; // Para el comando calcular_total
 
 // --- 1. Structs (SIEMPRE al principio) ---
@@ -54,6 +55,17 @@ pub struct IngredienteConTotal {
 /// Se conservan ñ/Ñ porque representan un sonido distinto y no son una "n" acentuada:
 /// "piña" y "pina" deben seguir siendo ingredientes diferentes.
 pub fn clave_ingrediente(nombre: &str) -> String {
+    // Sin puntuación final (. , ; :)
+    normalizar_base(nombre)
+        .trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':'))
+        .trim_end()
+        .to_string()
+}
+
+/// Minúsculas, sin tildes y con los espacios colapsados, pero **sin** tocar la
+/// puntuación. Se usa para las claves y para los prefijos de columna, que
+/// necesitan conservar el punto de "cant.".
+fn normalizar_base(nombre: &str) -> String {
     let mut sin_tildes = String::with_capacity(nombre.len());
 
     for c in nombre.chars() {
@@ -70,17 +82,11 @@ pub fn clave_ingrediente(nombre: &str) -> String {
     }
 
     // Minúsculas + espacios colapsados a uno solo
-    let colapsado = sin_tildes
+    sin_tildes
         .to_lowercase()
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ");
-
-    // Sin puntuación final (. , ; :)
-    colapsado
-        .trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':'))
-        .trim_end()
-        .to_string()
+        .join(" ")
 }
 
 /// Nombre visible limpio: sin espacios sobrantes, sin puntuación final y
@@ -224,41 +230,281 @@ fn cantidad_de_fila(fila: &[Data], columnas: &[usize]) -> f64 {
         .sum()
 }
 
-/// Nombre de columna del ingrediente: "Ingrediente", "Descripción", "Material"…
-fn es_columna_ingrediente(celda: &str) -> bool {
-    celda.contains("ingrediente")
-        || celda.contains("descripción")
-        || celda.contains("descripcion")
-        || celda.contains("material")
+/// Nombre de columna del ingrediente, comparado contra los sinónimos que el
+/// usuario configuró en Ajustes → Mapeo de Insumos.
+fn es_columna_ingrediente(celda: &str, reglas: &ReglasColumnas) -> bool {
+    contiene_sinonimo(&normalizar_cabecera(celda), &reglas.sinonimos_ingrediente)
 }
 
-/// Nombre de columna de la unidad de medida: "U/M", "UM", "Unidad"…
-fn es_columna_unidad(celda: &str) -> bool {
-    celda == "u/m" || celda == "um" || celda.contains("unidad")
+/// Nombre de columna de la unidad de medida ("U/M", "UM", "Unidad"…),
+/// comparado contra los sinónimos configurados.
+fn es_columna_unidad(celda: &str, reglas: &ReglasColumnas) -> bool {
+    contiene_sinonimo(&normalizar_cabecera(celda), &reglas.sinonimos_unidad)
 }
 
 /// Normaliza una cabecera con las mismas reglas que los nombres de ingredientes
 /// (minúsculas, sin tildes, espacios colapsados, sin puntuación final) para
-/// poder compararla por **igualdad exacta**.
+/// poder compararla por igualdad o contención.
 fn normalizar_cabecera(celda: &str) -> String {
     clave_ingrediente(celda)
 }
 
-/// Palabras que convierten un "total" en un dato monetario y no en una
-/// cantidad de ingredientes.
-const PALABRAS_MONETARIAS: [&str; 8] = [
-    "costo", "coste", "precio", "valor", "monto", "importe", "neto", "bruto",
-];
+/// ¿La cabecera (ya normalizada) coincide con alguno de los sinónimos?
+///
+/// Se compara por palabra completa para que sinónimos cortos ("um", "u/m") no
+/// se cuelen dentro de otras palabras ("número"). Los sinónimos de 4 caracteres
+/// o más también aceptan prefijos ("ingrediente" → "ingredientes", "material"
+/// → "materiales"), manteniendo la tolerancia del comportamiento anterior.
+fn contiene_sinonimo(cabecera_normalizada: &str, sinonimos: &[String]) -> bool {
+    sinonimos.iter().any(|sinonimo| {
+        if sinonimo.is_empty() {
+            return false;
+        }
+
+        if cabecera_normalizada == sinonimo {
+            return true;
+        }
+
+        cabecera_normalizada
+            .split(|c: char| !c.is_alphanumeric() && c != '/')
+            .filter(|parte| !parte.is_empty())
+            .any(|parte| {
+                parte == sinonimo
+                    || (sinonimo.chars().count() >= 4 && parte.starts_with(sinonimo.as_str()))
+            })
+    })
+}
+
+/// Reglas de lectura derivadas de la configuración de "Mapeo de Insumos".
+///
+/// Todas las listas se guardan ya normalizadas (minúsculas, sin tildes, sin
+/// duplicados) para compararlas contra la cabecera normalizada de cada hoja.
+/// Así el backend no conserva ninguna lista fija de columnas: la única fuente
+/// de verdad es `MapeoInsumos`.
+#[derive(Clone, Debug)]
+pub struct ReglasColumnas {
+    pub sinonimos_ingrediente: Vec<String>,
+    pub sinonimos_unidad: Vec<String>,
+    pub sinonimos_cantidad: Vec<String>,
+    pub sinonimos_total: Vec<String>,
+    pub etiquetas_cantidad_parcial: Vec<String>,
+    pub prefijos_cantidad: Vec<String>,
+    pub palabras_monetarias: Vec<String>,
+    pub palabras_fila_ignorada: Vec<String>,
+    /// Pares (alias normalizado, nombre canónico visible).
+    pub asociaciones_ingredientes: Vec<(String, String)>,
+    /// Pares (variante normalizada, unidad estándar visible). Incluye también
+    /// la propia forma estándar como variante reconocida.
+    pub unidades: Vec<(String, String)>,
+    pub filas_cabecera_ignoradas: usize,
+    pub filas_escaneo_cabecera: usize,
+    pub unidad_por_defecto: String,
+}
+
+impl Default for ReglasColumnas {
+    fn default() -> Self {
+        Self::desde_mapeo(&MapeoInsumos::default())
+            .expect("los valores por defecto deben ser reglas válidas")
+    }
+}
+
+impl ReglasColumnas {
+    /// Valida y normaliza el mapeo antes de leer un Excel. Si falta una lista
+    /// esencial devuelve un error en español pensado para mostrarse en el modal.
+    pub fn desde_mapeo(mapeo: &MapeoInsumos) -> Result<Self, String> {
+        let reglas = Self {
+            sinonimos_ingrediente: normalizar_lista_ajustes(&mapeo.sinonimos_ingrediente),
+            sinonimos_unidad: normalizar_lista_ajustes(&mapeo.sinonimos_unidad),
+            sinonimos_cantidad: normalizar_lista_ajustes(&mapeo.sinonimos_cantidad),
+            sinonimos_total: normalizar_lista_ajustes(&mapeo.sinonimos_total),
+            etiquetas_cantidad_parcial: normalizar_lista_ajustes(
+                &mapeo.etiquetas_cantidad_parcial,
+            ),
+            prefijos_cantidad: normalizar_prefijos(&mapeo.prefijos_cantidad),
+            palabras_monetarias: normalizar_lista_ajustes(&mapeo.palabras_monetarias),
+            palabras_fila_ignorada: normalizar_lista_ajustes(&mapeo.palabras_fila_ignorada),
+            asociaciones_ingredientes: normalizar_asociaciones(
+                &mapeo.asociaciones_ingredientes,
+            ),
+            unidades: normalizar_unidades(&mapeo.unidades),
+            filas_cabecera_ignoradas: mapeo.filas_cabecera_ignoradas.min(1_000) as usize,
+            filas_escaneo_cabecera: mapeo.filas_escaneo_cabecera.min(500) as usize,
+            unidad_por_defecto: mapeo.unidad_por_defecto.trim().to_string(),
+        };
+
+        let mut faltantes: Vec<&str> = Vec::new();
+
+        if reglas.sinonimos_ingrediente.is_empty() {
+            faltantes.push("sinónimos de ingrediente");
+        }
+        if reglas.sinonimos_unidad.is_empty() {
+            faltantes.push("sinónimos de unidad");
+        }
+        if reglas.sinonimos_cantidad.is_empty()
+            && reglas.sinonimos_total.is_empty()
+            && reglas.etiquetas_cantidad_parcial.is_empty()
+        {
+            faltantes.push("alguna regla de cantidad (sinónimos, total o etiquetas parciales)");
+        }
+        if reglas.filas_escaneo_cabecera == 0 {
+            faltantes.push("filas a examinar buscando la cabecera (mínimo 1)");
+        }
+
+        if !faltantes.is_empty() {
+            return Err(format!(
+                "Faltan reglas de lectura en Ajustes → Mapeo de Insumos: {}. \
+                 Agrega al menos un valor en cada lista y vuelve a procesar.",
+                faltantes.join("; ")
+            ));
+        }
+
+        Ok(reglas)
+    }
+
+    /// Devuelve el nombre canónico configurado para un ingrediente, o el
+    /// original si no hay asociación. La comparación es por nombre normalizado.
+    pub fn nombre_asociado(&self, nombre: &str) -> String {
+        if self.asociaciones_ingredientes.is_empty() {
+            return nombre.to_string();
+        }
+
+        let clave = clave_ingrediente(nombre);
+
+        self.asociaciones_ingredientes
+            .iter()
+            .find(|(alias, _)| alias == &clave)
+            .map(|(_, canonico)| canonico.clone())
+            .unwrap_or_else(|| nombre.to_string())
+    }
+
+    /// Devuelve la forma estándar de una unidad de medida ("LT" → "Litro"),
+    /// o la unidad original si no hay equivalencia configurada.
+    pub fn unidad_normalizada(&self, unidad: &str) -> String {
+        let original = unidad.trim();
+        let clave = normalizar_cabecera(original);
+
+        if clave.is_empty() {
+            return original.to_string();
+        }
+
+        self.unidades
+            .iter()
+            .find(|(variante, _)| variante == &clave)
+            .map(|(_, estandar)| estandar.clone())
+            .unwrap_or_else(|| original.to_string())
+    }
+}
+
+/// Normaliza las asociaciones alias → nombre y descarta vacías o duplicadas.
+/// Si un alias se repite, gana la primera asociación.
+fn normalizar_asociaciones(asociaciones: &[AsociacionIngrediente]) -> Vec<(String, String)> {
+    let mut normalizadas: Vec<(String, String)> = Vec::new();
+
+    for asociacion in asociaciones {
+        let alias = normalizar_cabecera(&asociacion.alias);
+        let nombre = asociacion.nombre.trim().to_string();
+
+        if alias.is_empty() || nombre.is_empty() {
+            continue;
+        }
+
+        if normalizadas
+            .iter()
+            .any(|(alias_existente, _)| alias_existente == &alias)
+        {
+            continue;
+        }
+
+        normalizadas.push((alias, nombre));
+    }
+
+    normalizadas
+}
+
+/// Construye el mapa variante normalizada → unidad estándar.
+///
+/// La propia forma estándar se registra como variante para que "Litro",
+/// "LITRO" y "litro" también se reconozcan. Si una variante se repite entre
+/// dos unidades, gana la primera (orden de la tabla configurada).
+fn normalizar_unidades(unidades: &[UnidadEquivalencia]) -> Vec<(String, String)> {
+    let mut mapa: Vec<(String, String)> = Vec::new();
+
+    for unidad in unidades {
+        let estandar = unidad.estandar.trim().to_string();
+        if estandar.is_empty() {
+            continue;
+        }
+
+        let estandar_normalizado = normalizar_cabecera(&estandar);
+        if !estandar_normalizado.is_empty()
+            && !mapa
+                .iter()
+                .any(|(clave, _)| clave == &estandar_normalizado)
+        {
+            mapa.push((estandar_normalizado, estandar.clone()));
+        }
+
+        for variante in &unidad.variantes {
+            let clave = normalizar_cabecera(variante);
+            if clave.is_empty() || mapa.iter().any(|(existente, _)| existente == &clave) {
+                continue;
+            }
+
+            mapa.push((clave, estandar.clone()));
+        }
+    }
+
+    mapa
+}
+
+/// Normaliza cada valor de una lista de ajustes y descarta vacíos y duplicados
+/// (sin distinguir mayúsculas, tildes ni espacios sobrantes).
+fn normalizar_lista_ajustes(valores: &[String]) -> Vec<String> {
+    let mut normalizados: Vec<String> = Vec::new();
+
+    for valor in valores {
+        let normalizado = normalizar_cabecera(valor);
+        if normalizado.is_empty() || normalizados.contains(&normalizado) {
+            continue;
+        }
+
+        normalizados.push(normalizado);
+    }
+
+    normalizados
+}
+
+/// Como `normalizar_lista_ajustes`, pero conserva la puntuación interna y final:
+/// un prefijo configurado como "cant." debe seguir llevando su punto.
+fn normalizar_prefijos(valores: &[String]) -> Vec<String> {
+    let mut normalizados: Vec<String> = Vec::new();
+
+    for valor in valores {
+        let normalizado = normalizar_base(valor);
+        if normalizado.is_empty() || normalizados.contains(&normalizado) {
+            continue;
+        }
+
+        normalizados.push(normalizado);
+    }
+
+    normalizados
+}
+
 
 /// ¿La cabecera (ya normalizada) es monetaria? "Costo Total", "Valor Total",
 /// "Total $", "Precio unitario"…
 ///
+/// Las palabras las configura el usuario; los símbolos de moneda se reconocen
+/// siempre porque no dependen del idioma del archivo.
+///
 /// Se usa para dos cosas: descartar esas columnas como cantidad y clasificar
 /// "Costo Total" aparte, para que nunca se confunda con "Total".
-fn es_columna_monetaria(cabecera_normalizada: &str) -> bool {
-    PALABRAS_MONETARIAS
+fn es_columna_monetaria(cabecera_normalizada: &str, reglas: &ReglasColumnas) -> bool {
+    reglas
+        .palabras_monetarias
         .iter()
-        .any(|palabra| cabecera_normalizada.contains(palabra))
+        .any(|palabra| cabecera_normalizada.contains(palabra.as_str()))
         || cabecera_normalizada.contains('$')
         || cabecera_normalizada.contains('€')
         || cabecera_normalizada.contains('£')
@@ -266,45 +512,45 @@ fn es_columna_monetaria(cabecera_normalizada: &str) -> bool {
 
 /// ¿La cabecera es la columna autoritativa de cantidad total?
 ///
-/// **Filtro estricto**: solo `"total"` o `"total cantidad"`, comparados por
-/// igualdad exacta. Nada de `contains("total")`, porque eso aceptaría
-/// "Costo Total", "Total Costo", "Valor Total", "Total Neto" o "Total $",
-/// que son dinero y no cantidad.
-///
-/// Nota: `"cantidad total"` **no** entra aquí a propósito. Es el nombre que usa
-/// la propia app al exportar (junto a "Cantidad"), y ese valor ya viene
-/// multiplicado por los grupos: reimportarlo como cantidad base volvería a
-/// escalarlo. Sin "total" exacto, cae en la lógica anterior.
-fn es_columna_total(celda: &str) -> bool {
+/// **Filtro estricto**: se compara por igualdad exacta contra los sinónimos de
+/// total configurados (por defecto "total" y "total cantidad"). Nada de
+/// `contains("total")`, porque eso aceptaría "Costo Total", "Total Costo",
+/// "Valor Total", "Total Neto" o "Total $", que son dinero y no cantidad.
+fn es_columna_total(celda: &str, reglas: &ReglasColumnas) -> bool {
     let normalizada = normalizar_cabecera(celda);
 
     // Cualquier palabra monetaria descarta la columna antes de comparar.
-    if es_columna_monetaria(&normalizada) {
+    if es_columna_monetaria(&normalizada, reglas) {
         return false;
     }
 
-    matches!(normalizada.as_str(), "total" | "total cantidad")
+    reglas
+        .sinonimos_total
+        .iter()
+        .any(|sinonimo| sinonimo == &normalizada)
 }
 
 /// Detecta si una celda de cabecera es una columna de cantidad **parcial**
 /// —A, B, C, TP, TA— y devuelve su etiqueta canónica.
 ///
 /// Acepta la letra sola y también variantes con prefijo: `"A"`, `"Cantidad A"`,
-/// `"Cant. B"`, `"CANTIDAD (TP)"`, `"CantidadA"`, `"A:"`.
-///
-/// Se espera la celda ya recortada y en minúsculas (se normaliza en
-/// `detectar_columnas`). Devolver la etiqueta permite deduplicar: si una hoja
-/// trae "A" y "Cantidad A", se usa la primera y no se suma dos veces.
-fn etiqueta_cantidad_parcial(celda: &str) -> Option<&'static str> {
-    let mut resto = celda.trim();
+/// `"Cant. B"`, `"CANTIDAD (TP)"`, `"CantidadA"`, `"A:"`. Tanto las etiquetas
+/// como los prefijos salen de los ajustes del usuario; el valor devuelto es la
+/// etiqueta configurada, lo que permite deduplicar ("A" y "Cantidad A" son la
+/// misma columna).
+fn etiqueta_cantidad_parcial(celda: &str, reglas: &ReglasColumnas) -> Option<String> {
+    let mut resto = normalizar_cabecera(celda);
 
-    // Prefijos habituales. "cantidad" se prueba primero: si se probara "cant"
-    // antes, "cantidad a" quedaría como "idad a" y no se reconocería.
-    for prefijo in ["cantidad", "ctdad.", "ctdad", "cant.", "cant"] {
-        if let Some(sin_prefijo) = resto.strip_prefix(prefijo) {
-            resto = sin_prefijo;
-            break;
-        }
+    // Prefijos habituales. Se elige el más largo que coincida para que
+    // "cantidad a" no quede como "idad a" aunque el orden configurado cambie.
+    let sin_prefijo = reglas
+        .prefijos_cantidad
+        .iter()
+        .filter(|prefijo| !prefijo.is_empty() && resto.starts_with(prefijo.as_str()))
+        .max_by_key(|prefijo| prefijo.len())
+        .map(|prefijo| resto[prefijo.len()..].trim().to_string());
+    if let Some(nuevo) = sin_prefijo {
+        resto = nuevo;
     }
 
     // Primera palabra y sin adornos: "a", "(a)", "a:", "a (kg)".
@@ -314,17 +560,25 @@ fn etiqueta_cantidad_parcial(celda: &str) -> Option<&'static str> {
         .unwrap_or("")
         .trim_matches(|c: char| !c.is_alphanumeric());
 
-    match etiqueta {
-        "a" => Some("a"),
-        "b" => Some("b"),
-        "c" => Some("c"),
-        "tp" => Some("tp"),
-        "ta" => Some("ta"),
-        _ => None,
+    if etiqueta.is_empty() {
+        return None;
     }
+
+    reglas
+        .etiquetas_cantidad_parcial
+        .iter()
+        .find(|configurada| configurada.as_str() == etiqueta)
+        .cloned()
+}
+
+/// ¿La cabecera es una columna de cantidad genérica? Se compara contra los
+/// sinónimos de cantidad configurados (por defecto "cantidad").
+fn es_columna_cantidad_generica(celda: &str, reglas: &ReglasColumnas) -> bool {
+    contiene_sinonimo(&normalizar_cabecera(celda), &reglas.sinonimos_cantidad)
 }
 
 /// Columnas ya identificadas en la fila de cabecera de una hoja.
+#[derive(Debug)]
 struct ColumnasHoja {
     /// Índice de la fila donde están los encabezados.
     fila_cabecera: usize,
@@ -336,26 +590,34 @@ struct ColumnasHoja {
     cantidad: Vec<usize>,
 }
 
-/// Busca la fila de cabecera dentro de las primeras 15 filas y devuelve los
-/// índices de sus columnas.
+/// Busca la fila de cabecera dentro de las primeras `filas_escaneo_cabecera`
+/// filas y devuelve los índices de sus columnas.
 ///
 /// Una fila es cabecera si reúne las tres piezas: nombre, unidad y al menos
-/// una columna de cantidad.
+/// una columna de cantidad. Si ninguna fila las reúne, devuelve un error que
+/// explica qué columna faltó y qué sinónimos están configurados, para que la
+/// interfaz pueda mostrarlo tal cual.
 ///
 /// Jerarquía de la cantidad (de mayor a menor prioridad):
-/// 1. **"Total" exacto** → es la única fuente; se ignoran A/B/C/TP/TA.
+/// 1. **Total exacto** → es la única fuente; se ignoran A/B/C/TP/TA.
 /// 2. **Desglose A/B/C/TP/TA** → se devuelven todas para sumarlas (y se
 ///    ignora cualquier "Cantidad" genérica, que suele ser el total ya hecho).
-/// 3. **Primera columna que contenga "cantidad"** → comportamiento histórico.
+/// 3. **Primera columna de cantidad genérica** → comportamiento histórico.
 ///
 /// Las columnas monetarias ("Costo Total", "Valor Total", "Total $"…) se
 /// descartan siempre como cantidad y se registran aparte.
-fn detectar_columnas(filas: &[Vec<String>]) -> Option<ColumnasHoja> {
+fn detectar_columnas(
+    filas: &[Vec<String>],
+    reglas: &ReglasColumnas,
+) -> Result<ColumnasHoja, String> {
+    // Mejor fila parcial vista: (piezas reconocidas, descripción del fallo).
+    let mut mejor: Option<(usize, String)> = None;
+
     for (indice_fila, celdas) in filas.iter().enumerate() {
         let mut nombre: Option<usize> = None;
         let mut unidad: Option<usize> = None;
         let mut cantidad: Vec<usize> = Vec::new();
-        let mut etiquetas: Vec<&'static str> = Vec::new();
+        let mut etiquetas: Vec<String> = Vec::new();
         let mut cantidad_generica: Option<usize> = None;
         // Columna "Total" autoritativa (prioridad 1).
         let mut cantidad_total: Option<usize> = None;
@@ -363,66 +625,136 @@ fn detectar_columnas(filas: &[Vec<String>]) -> Option<ColumnasHoja> {
         let mut columna_monetaria: Option<usize> = None;
 
         for (j, celda) in celdas.iter().enumerate() {
-            if nombre.is_none() && es_columna_ingrediente(celda) {
+            if nombre.is_none() && es_columna_ingrediente(celda, reglas) {
                 nombre = Some(j);
-            } else if unidad.is_none() && es_columna_unidad(celda) {
+            } else if unidad.is_none() && es_columna_unidad(celda, reglas) {
                 unidad = Some(j);
             } else if columna_monetaria.is_none()
-                && es_columna_monetaria(&normalizar_cabecera(celda))
+                && es_columna_monetaria(&normalizar_cabecera(celda), reglas)
             {
                 // Lo monetario se comprueba antes que "total", "a", "b"…, así
                 // "Cantidad Costo" o "Costo Total" no se cuelan como cantidad.
                 columna_monetaria = Some(j);
-            } else if cantidad_total.is_none() && es_columna_total(celda) {
+            } else if cantidad_total.is_none() && es_columna_total(celda, reglas) {
                 cantidad_total = Some(j);
-            } else if let Some(etiqueta) = etiqueta_cantidad_parcial(celda) {
+            } else if let Some(etiqueta) = etiqueta_cantidad_parcial(celda, reglas) {
                 // Una columna por etiqueta: "A" y "Cantidad A" son la misma.
                 if !etiquetas.contains(&etiqueta) {
                     etiquetas.push(etiqueta);
                     cantidad.push(j);
                 }
-            } else if cantidad_generica.is_none() && celda.contains("cantidad") {
+            } else if cantidad_generica.is_none()
+                && es_columna_cantidad_generica(celda, reglas)
+            {
                 cantidad_generica = Some(j);
             }
         }
 
-        // Sin nombre o sin unidad no es una cabecera de ingredientes.
-        let (Some(nombre), Some(unidad)) = (nombre, unidad) else {
-            continue;
-        };
+        let hay_cantidad =
+            cantidad_total.is_some() || !cantidad.is_empty() || cantidad_generica.is_some();
 
-        // Prioridad 1: "Total" manda y descarta el desglose por completo.
-        // Prioridad 2: suma de A/B/C/TP/TA.
-        // Prioridad 3: primera "Cantidad" genérica.
-        let cantidad = if let Some(indice) = cantidad_total {
-            vec![indice]
-        } else if !cantidad.is_empty() {
-            cantidad
-        } else if let Some(indice) = cantidad_generica {
-            vec![indice]
-        } else {
-            // Tiene nombre y unidad pero ninguna cantidad: no es la cabecera.
-            continue;
-        };
-
-        // Deja rastro de que la columna de dinero se vio y se ignoró para la
-        // cantidad (queda disponible si algún día se calcula el valor).
-        if let Some(indice) = columna_monetaria {
-            eprintln!(
-                "[excel] Columna monetaria ignorada para la cantidad: {:?}",
-                celdas[indice]
-            );
+        let mut faltantes: Vec<&str> = Vec::new();
+        if nombre.is_none() {
+            faltantes.push("ingrediente");
+        }
+        if unidad.is_none() {
+            faltantes.push("unidad");
+        }
+        if !hay_cantidad {
+            faltantes.push("cantidad");
         }
 
-        return Some(ColumnasHoja {
-            fila_cabecera: indice_fila,
-            nombre,
-            unidad,
-            cantidad,
-        });
+        // Cabecera completa: se devuelve de inmediato.
+        if faltantes.is_empty() {
+            // Prioridad 1: "Total" manda y descarta el desglose por completo.
+            // Prioridad 2: suma de A/B/C/TP/TA.
+            // Prioridad 3: primera "Cantidad" genérica.
+            let cantidad = if let Some(indice) = cantidad_total {
+                vec![indice]
+            } else if !cantidad.is_empty() {
+                cantidad
+            } else {
+                vec![cantidad_generica.expect("hay cantidad genérica")]
+            };
+
+            // Deja rastro de que la columna de dinero se vio y se ignoró para
+            // la cantidad (queda disponible si algún día se calcula el valor).
+            if let Some(indice) = columna_monetaria {
+                eprintln!(
+                    "[excel] Columna monetaria ignorada para la cantidad: {:?}",
+                    celdas[indice]
+                );
+            }
+
+            return Ok(ColumnasHoja {
+                fila_cabecera: indice_fila,
+                nombre: nombre.expect("hay nombre"),
+                unidad: unidad.expect("hay unidad"),
+                cantidad,
+            });
+        }
+
+        // Fila parcial: se conserva la que reconoció más piezas para explicar
+        // el fallo con el mejor contexto posible.
+        let reconocidas = 3 - faltantes.len();
+        if reconocidas > 0 {
+            let motivo = format!(
+                "fila {}: {}",
+                indice_fila + 1,
+                describir_faltantes(&faltantes, reglas)
+            );
+
+            if mejor
+                .as_ref()
+                .is_none_or(|(puntos, _)| reconocidas > *puntos)
+            {
+                mejor = Some((reconocidas, motivo));
+            }
+        }
     }
 
-    None
+    Err(match mejor {
+        Some((_, motivo)) => format!(
+            "no se encontró una cabecera completa ({motivo}). \
+             Revisa los sinónimos en Ajustes → Mapeo de Insumos."
+        ),
+        None => format!(
+            "no se reconoció ninguna columna de ingrediente, unidad ni cantidad \
+             en las {} filas revisadas (sinónimos actuales: ingrediente [{}], unidad [{}], \
+             cantidad [{}]). Revisa Ajustes → Mapeo de Insumos.",
+            filas.len(),
+            reglas.sinonimos_ingrediente.join(", "),
+            reglas.sinonimos_unidad.join(", "),
+            reglas.sinonimos_cantidad.join(", ")
+        ),
+    })
+}
+
+/// Texto en español con las columnas que faltaron y los sinónimos vigentes.
+fn describir_faltantes(faltantes: &[&str], reglas: &ReglasColumnas) -> String {
+    let mut piezas: Vec<String> = Vec::new();
+
+    for falta in faltantes {
+        match *falta {
+            "ingrediente" => piezas.push(format!(
+                "falta la columna de ingrediente (sinónimos: {})",
+                reglas.sinonimos_ingrediente.join(", ")
+            )),
+            "unidad" => piezas.push(format!(
+                "falta la columna de unidad (sinónimos: {})",
+                reglas.sinonimos_unidad.join(", ")
+            )),
+            "cantidad" => piezas.push(format!(
+                "falta una columna de cantidad (sinónimos: [{}]; total: [{}]; etiquetas: [{}])",
+                reglas.sinonimos_cantidad.join(", "),
+                reglas.sinonimos_total.join(", "),
+                reglas.etiquetas_cantidad_parcial.join(", ")
+            )),
+            otro => piezas.push(format!("falta la columna de {otro}")),
+        }
+    }
+
+    piezas.join("; ")
 }
 
 // --- 3. Comandos ---
@@ -434,27 +766,75 @@ pub fn obtener_hojas_excel(ruta: String) -> Result<Vec<String>, String> {
     Ok(workbook.sheet_names().to_owned())
 }
 
+/// Resultado de leer una o varias hojas de un archivo.
+///
+/// `advertencias` incluye las hojas que no se pudieron leer o cuya cabecera no
+/// se reconoció, para que la interfaz las muestre aunque el resto del archivo
+/// sí se haya procesado.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultadoProcesamientoHojas {
+    pub ingredientes: Vec<IngredienteConsolidado>,
+    pub advertencias: Vec<String>,
+}
+
+/// Lee las hojas indicadas aplicando las reglas configuradas por el usuario.
+///
+/// `mapeo` puede llegar desde el frontend (que ya lo tiene cargado) o ser
+/// `None`, en cuyo caso se lee del Store (`config.json`, clave
+/// `mapeo_insumos`). Así ninguna regla de detección queda fija en el backend.
 #[tauri::command]
 pub fn procesar_hojas_excel(
+    app: tauri::AppHandle,
     ruta: String,
     nombres_hojas: Vec<String>,
-) -> Result<Vec<IngredienteConsolidado>, String> {
+    mapeo: Option<MapeoInsumos>,
+) -> Result<ResultadoProcesamientoHojas, String> {
+    let mapeo = match mapeo {
+        Some(mapeo) => mapeo,
+        None => crate::ajustes::obtener_mapeo_insumos(app)?,
+    };
+
+    // Validación temprana: si falta una regla esencial se devuelve un error
+    // legible en vez de fallar hoja por hoja.
+    let reglas = ReglasColumnas::desde_mapeo(&mapeo)?;
+
+    procesar_archivo_con_reglas(&ruta, nombres_hojas, &reglas)
+}
+
+/// Núcleo de lectura separado del comando: así se puede probar con un `.xlsx`
+/// real sin necesitar un `AppHandle` de Tauri.
+fn procesar_archivo_con_reglas(
+    ruta: &str,
+    nombres_hojas: Vec<String>,
+    reglas: &ReglasColumnas,
+) -> Result<ResultadoProcesamientoHojas, String> {
+    if nombres_hojas.is_empty() {
+        return Err("No hay hojas seleccionadas para procesar.".to_string());
+    }
+
     let mut workbook: Xlsx<_> =
-        open_workbook(&ruta).map_err(|e| format!("Error abriendo Excel: {}", e))?;
+        open_workbook(ruta).map_err(|e| format!("Error abriendo Excel: {}", e))?;
     let mut mapa: HashMap<String, IngredienteConsolidado> = HashMap::new();
+    let mut advertencias: Vec<String> = Vec::new();
 
     for nombre_hoja in nombres_hojas {
         let range = match workbook.worksheet_range(&nombre_hoja) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(_) => {
+                advertencias.push(format!(
+                    "Hoja «{nombre_hoja}»: no se pudo leer su contenido."
+                ));
+                continue;
+            }
         };
 
-        // Detección automática de columnas (nombre, unidad y una o varias
-        // columnas de cantidad). Solo se miran las primeras 15 filas: arriba
-        // suelen venir logos y títulos.
+        // Solo se miran las primeras filas: arriba suelen venir logos y
+        // títulos. `filas_cabecera_ignoradas` desplaza la ventana de búsqueda.
         let filas_cabecera: Vec<Vec<String>> = range
             .rows()
-            .take(15)
+            .skip(reglas.filas_cabecera_ignoradas)
+            .take(reglas.filas_escaneo_cabecera)
             .map(|row| {
                 row.iter()
                     .map(|c| c.to_string().trim().to_lowercase())
@@ -462,32 +842,57 @@ pub fn procesar_hojas_excel(
             })
             .collect();
 
-        let Some(columnas) = detectar_columnas(&filas_cabecera) else {
-            continue; // hoja sin cabecera reconocible: se omite entera
+        let columnas = match detectar_columnas(&filas_cabecera, &reglas) {
+            Ok(columnas) => columnas,
+            Err(motivo) => {
+                advertencias.push(format!("Hoja «{nombre_hoja}»: {motivo}"));
+                continue;
+            }
         };
 
-        for row in range.rows().skip(columnas.fila_cabecera + 1) {
+        let fila_inicial = reglas.filas_cabecera_ignoradas + columnas.fila_cabecera + 1;
+
+        for row in range.rows().skip(fila_inicial) {
             let nombre = row
                 .get(columnas.nombre)
                 .map(|c| c.to_string().trim().to_string())
                 .unwrap_or_default();
-            let um = row
+            let mut um = row
                 .get(columnas.unidad)
                 .map(|c| c.to_string().trim().to_string())
                 .unwrap_or_default();
 
-            // Suma de TODAS las columnas de cantidad detectadas (A, B, C,
-            // TP, TA o una única "Cantidad"). Ver `cantidad_de_fila`.
-            let cantidad = cantidad_de_fila(row, &columnas.cantidad);
+            // Unidad por defecto configurada, para celdas que vienen vacías.
+            if um.is_empty() {
+                um = reglas.unidad_por_defecto.clone();
+            }
 
             if nombre.is_empty() || um.is_empty() {
                 continue;
             }
-            if nombre.to_lowercase().contains("material")
-                || nombre.to_lowercase().contains("descripción")
+
+            // Unificación de unidades: "LT", "lts" y "litro" pasan a la misma
+            // forma estándar antes de consolidar por nombre + unidad.
+            let um = reglas.unidad_normalizada(&um);
+
+            // Cabeceras repetidas u otras filas que el usuario marcó como no
+            // dato ("material", "descripción"…).
+            let nombre_normalizado = clave_ingrediente(&nombre);
+            if reglas
+                .palabras_fila_ignorada
+                .iter()
+                .any(|palabra| nombre_normalizado.contains(palabra.as_str()))
             {
                 continue;
             }
+
+            // Asociación alias → nombre canónico configurada por el usuario en
+            // "Mapeo de Insumos". Se aplica después de descartar filas no dato.
+            let nombre = reglas.nombre_asociado(&nombre);
+
+            // Suma de TODAS las columnas de cantidad detectadas (A, B, C,
+            // TP, TA o una única "Cantidad"). Ver `cantidad_de_fila`.
+            let cantidad = cantidad_de_fila(row, &columnas.cantidad);
 
             let clave_nombre = clave_ingrediente(&nombre);
             let clave = format!("{}|{}", clave_nombre, um.to_lowercase());
@@ -512,9 +917,28 @@ pub fn procesar_hojas_excel(
         }
     }
 
-    let mut resultado: Vec<IngredienteConsolidado> = mapa.into_values().collect();
-    resultado.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
-    Ok(resultado)
+    let mut ingredientes: Vec<IngredienteConsolidado> = mapa.into_values().collect();
+    ingredientes.sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
+
+    if ingredientes.is_empty() {
+        let detalle = if advertencias.is_empty() {
+            "Las hojas seleccionadas no contienen filas de ingredientes válidas \
+             (se necesita un nombre y una unidad en cada fila)."
+                .to_string()
+        } else {
+            format!(
+                "No se pudo leer ninguna hoja:\n- {}",
+                advertencias.join("\n- ")
+            )
+        };
+
+        return Err(detalle);
+    }
+
+    Ok(ResultadoProcesamientoHojas {
+        ingredientes,
+        advertencias,
+    })
 }
 
 /// Consolida los ingredientes de varios archivos en una sola lista:
@@ -784,7 +1208,7 @@ mod pruebas {
             ("a (kg)", "a"),
         ] {
             assert_eq!(
-                etiqueta_cantidad_parcial(celda),
+                etiqueta_cantidad_parcial(celda, &ReglasColumnas::default()).as_deref(),
                 Some(esperado),
                 "no reconoció {celda:?}"
             );
@@ -801,7 +1225,7 @@ mod pruebas {
             "comentarios",
         ] {
             assert_eq!(
-                etiqueta_cantidad_parcial(celda),
+                etiqueta_cantidad_parcial(celda, &ReglasColumnas::default()),
                 None,
                 "confundió {celda:?} con una columna parcial"
             );
@@ -857,7 +1281,8 @@ mod pruebas {
             ],
         ];
 
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
         assert_eq!(columnas.fila_cabecera, 1);
         assert_eq!(columnas.nombre, 0);
         assert_eq!(columnas.unidad, 1);
@@ -873,7 +1298,8 @@ mod pruebas {
             "cant. b".to_string(),
         ]];
 
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
         assert_eq!(columnas.cantidad, vec![2, 3]);
     }
 
@@ -887,7 +1313,8 @@ mod pruebas {
             "cantidad total".to_string(),
         ]];
 
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
         assert_eq!(columnas.cantidad, vec![2]);
     }
 
@@ -902,7 +1329,8 @@ mod pruebas {
             "a".to_string(),
         ]];
 
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
         assert_eq!(columnas.cantidad, vec![3]);
     }
 
@@ -914,7 +1342,7 @@ mod pruebas {
             "comentarios".to_string(),
         ]];
 
-        assert!(detectar_columnas(&filas).is_none());
+        assert!(detectar_columnas(&filas, &ReglasColumnas::default()).is_err());
     }
 
     #[test]
@@ -927,7 +1355,8 @@ mod pruebas {
             "total".to_string(),
         ]];
 
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
 
         // Solo la columna "Total": A y B se descartan por completo.
         assert_eq!(columnas.cantidad, vec![4]);
@@ -936,7 +1365,10 @@ mod pruebas {
     #[test]
     fn total_acepta_sus_variantes() {
         for cabecera in ["total", "TOTAL", "Total:", "Total  Cantidad", "TÓTAL", " Total "] {
-            assert!(es_columna_total(cabecera), "debería aceptar {cabecera:?}");
+            assert!(
+                es_columna_total(cabecera, &ReglasColumnas::default()),
+                "debería aceptar {cabecera:?}"
+            );
         }
     }
 
@@ -956,7 +1388,7 @@ mod pruebas {
             "total general",
         ] {
             assert!(
-                !es_columna_total(cabecera),
+                !es_columna_total(cabecera, &ReglasColumnas::default()),
                 "no debería aceptar {cabecera:?} como cantidad"
             );
         }
@@ -971,7 +1403,8 @@ mod pruebas {
             "total".to_string(),
         ]];
 
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
 
         assert_eq!(columnas.cantidad, vec![3]); // "total", nunca "costo total"
     }
@@ -985,7 +1418,8 @@ mod pruebas {
             "total".to_string(),
         ]];
 
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
 
         assert_eq!(columnas.cantidad, vec![3]);
     }
@@ -1000,7 +1434,7 @@ mod pruebas {
 
         // Sin una cantidad real no hay cabecera: mejor omitir la hoja que
         // usar el dinero como kilos.
-        assert!(detectar_columnas(&filas).is_none());
+        assert!(detectar_columnas(&filas, &ReglasColumnas::default()).is_err());
     }
 
     #[test]
@@ -1011,7 +1445,8 @@ mod pruebas {
             "a".to_string(),
             "total".to_string(),
         ]];
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
 
         // A = 5, Total = 8 → debe usarse 8 (ni 5 ni 13)
         let fila = vec![
@@ -1028,7 +1463,10 @@ mod pruebas {
     fn cantidad_total_no_se_confunde_con_el_total_estricto() {
         // Es el encabezado que exporta la propia app y ya viene multiplicado:
         // tratarlo como total volvería a escalarlo al reimportar.
-        assert!(!es_columna_total("Cantidad Total"));
+        assert!(!es_columna_total(
+            "Cantidad Total",
+            &ReglasColumnas::default()
+        ));
 
         // Aun así sigue funcionando por la vía genérica de siempre.
         let filas = vec![vec![
@@ -1036,7 +1474,362 @@ mod pruebas {
             "unidad".to_string(),
             "cantidad total".to_string(),
         ]];
-        let columnas = detectar_columnas(&filas).expect("debe encontrar la cabecera");
+        let columnas =
+            detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
         assert_eq!(columnas.cantidad, vec![2]);
+    }
+
+    // --- Reglas dinámicas provenientes de los ajustes ---
+
+    fn mapeo_con(cambiar: impl FnOnce(&mut MapeoInsumos)) -> MapeoInsumos {
+        let mut mapeo = MapeoInsumos::default();
+        cambiar(&mut mapeo);
+        mapeo
+    }
+
+    #[test]
+    fn usa_los_sinonimos_configurados_por_el_usuario() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.sinonimos_ingrediente = vec!["producto".to_string()];
+            mapeo.sinonimos_unidad = vec!["medida".to_string()];
+            mapeo.sinonimos_cantidad = vec!["qty".to_string()];
+        });
+        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+
+        let filas = vec![vec![
+            "producto".to_string(),
+            "medida".to_string(),
+            "qty".to_string(),
+        ]];
+        let columnas = detectar_columnas(&filas, &reglas).expect("debe detectar la cabecera");
+
+        assert_eq!(columnas.nombre, 0);
+        assert_eq!(columnas.unidad, 1);
+        assert_eq!(columnas.cantidad, vec![2]);
+    }
+
+    #[test]
+    fn los_sinonimos_anteriores_dejan_de_reconocerse() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.sinonimos_ingrediente = vec!["producto".to_string()];
+        });
+        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+
+        // "ingrediente" ya no está configurado: la cabecera no se reconoce y
+        // el error lo explica.
+        let filas = vec![vec![
+            "ingrediente".to_string(),
+            "unidad".to_string(),
+            "cantidad".to_string(),
+        ]];
+        let error = detectar_columnas(&filas, &reglas).expect_err("no debe detectar");
+
+        assert!(error.contains("ingrediente"), "error inesperado: {error}");
+    }
+
+    #[test]
+    fn una_lista_esencial_vacia_devuelve_error_controlado() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.sinonimos_ingrediente.clear();
+        });
+
+        let error = ReglasColumnas::desde_mapeo(&mapeo).expect_err("debe fallar");
+
+        assert!(
+            error.contains("sinónimos de ingrediente"),
+            "error inesperado: {error}"
+        );
+        assert!(error.contains("Ajustes"), "error inesperado: {error}");
+    }
+
+    #[test]
+    fn sin_ninguna_regla_de_cantidad_devuelve_error() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.sinonimos_cantidad.clear();
+            mapeo.sinonimos_total.clear();
+            mapeo.etiquetas_cantidad_parcial.clear();
+        });
+
+        let error = ReglasColumnas::desde_mapeo(&mapeo).expect_err("debe fallar");
+
+        assert!(
+            error.contains("cantidad"),
+            "error inesperado: {error}"
+        );
+    }
+
+    #[test]
+    fn las_etiquetas_parciales_son_configurables() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.etiquetas_cantidad_parcial = vec!["x".to_string(), "y".to_string()];
+        });
+        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+
+        let filas = vec![vec![
+            "ingrediente".to_string(),
+            "unidad".to_string(),
+            "cantidad x".to_string(),
+            "y".to_string(),
+        ]];
+        let columnas = detectar_columnas(&filas, &reglas).expect("debe detectar la cabecera");
+
+        assert_eq!(columnas.cantidad, vec![2, 3]);
+    }
+
+    #[test]
+    fn el_total_tambien_sale_de_los_ajustes() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.sinonimos_total = vec!["total final".to_string()];
+        });
+        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+
+        assert!(es_columna_total("Total Final", &reglas));
+        assert!(!es_columna_total("Total", &reglas));
+    }
+
+    #[test]
+    fn el_error_de_cabecera_indica_la_columna_que_falta() {
+        let filas = vec![vec![
+            "ingrediente".to_string(),
+            "unidad".to_string(),
+            "comentarios".to_string(),
+        ]];
+
+        let error = detectar_columnas(&filas, &ReglasColumnas::default())
+            .expect_err("no debe detectar");
+
+        assert!(error.contains("cantidad"), "error inesperado: {error}");
+        assert!(error.contains("sinónimos"), "error inesperado: {error}");
+    }
+
+    #[test]
+    fn normaliza_tildes_y_mayusculas_de_los_sinonimos() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.sinonimos_ingrediente = vec!["  DESCRIPCIÓN  ".to_string()];
+        });
+        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+
+        assert!(es_columna_ingrediente("Descripcion del insumo", &reglas));
+    }
+
+    #[test]
+    fn los_sinonimos_cortos_no_coinciden_por_subcadena() {
+        let reglas = ReglasColumnas::default();
+
+        // "um" no debe aparecer dentro de "número".
+        assert!(!es_columna_unidad("número de orden", &reglas));
+        assert!(es_columna_unidad("UM", &reglas));
+        assert!(es_columna_unidad("Unidad de medida", &reglas));
+
+        // Los sinónimos largos conservan la tolerancia a plurales.
+        assert!(es_columna_ingrediente("Ingredientes", &reglas));
+        assert!(es_columna_ingrediente("Nombre del ingrediente", &reglas));
+    }
+
+    #[test]
+    fn aplica_asociaciones_de_ingredientes() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.asociaciones_ingredientes = vec![AsociacionIngrediente {
+                alias: "azucar".to_string(),
+                nombre: "Azúcar".to_string(),
+            }];
+        });
+        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+
+        // La comparación normaliza mayúsculas, tildes y espacios.
+        assert_eq!(reglas.nombre_asociado("AZÚCAR"), "Azúcar");
+        assert_eq!(reglas.nombre_asociado("  azucar  "), "Azúcar");
+
+        // Un ingrediente sin asociación se mantiene tal cual.
+        assert_eq!(reglas.nombre_asociado("Harina"), "Harina");
+    }
+
+    #[test]
+    fn unifica_variantes_de_unidades() {
+        let reglas = ReglasColumnas::default();
+
+        assert_eq!(reglas.unidad_normalizada("LT"), "Litro");
+        assert_eq!(reglas.unidad_normalizada("lts"), "Litro");
+        assert_eq!(reglas.unidad_normalizada("litros"), "Litro");
+        assert_eq!(reglas.unidad_normalizada("LITRO"), "Litro");
+        assert_eq!(reglas.unidad_normalizada("KGS"), "Kilo");
+        assert_eq!(reglas.unidad_normalizada("g"), "Gramo");
+        assert_eq!(reglas.unidad_normalizada("UND"), "Unidad");
+
+        // Una unidad sin equivalencia configurada se conserva.
+        assert_eq!(reglas.unidad_normalizada("docena"), "docena");
+    }
+
+    #[test]
+    fn las_equivalencias_de_unidades_son_configurables() {
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.unidades = vec![UnidadEquivalencia {
+                estandar: "Bolsa".to_string(),
+                variantes: vec!["bolsas".to_string(), "b".to_string()],
+            }];
+        });
+        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+
+        assert_eq!(reglas.unidad_normalizada("B"), "Bolsa");
+        assert_eq!(reglas.unidad_normalizada("bolsas"), "Bolsa");
+        // Al reemplazar la tabla, la equivalencia histórica de litro ya no aplica.
+        assert_eq!(reglas.unidad_normalizada("LT"), "LT");
+    }
+
+    #[test]
+    fn lee_un_xlsx_real_con_reglas_dinamicas() {
+        use rust_xlsxwriter::Workbook;
+
+        let ruta = std::env::temp_dir().join(format!(
+            "appgastronomia_lectura_{}.xlsx",
+            std::process::id()
+        ));
+        let ruta_texto = ruta.to_string_lossy().to_string();
+
+        {
+            let mut libro = Workbook::new();
+            let hoja = libro.add_worksheet();
+
+            // Fila 0: ruido, se ignora con `filas_cabecera_ignoradas = 1`.
+            hoja.write_string(0, 0, "Reporte de bodega").unwrap();
+            // Fila 1: cabecera con sinónimos personalizados.
+            hoja.write_string(1, 0, "Producto").unwrap();
+            hoja.write_string(1, 1, "Medida").unwrap();
+            hoja.write_string(1, 2, "Qty").unwrap();
+            // Datos.
+            hoja.write_string(2, 0, "Harina").unwrap();
+            hoja.write_string(2, 1, "kg").unwrap();
+            hoja.write_number(2, 2, 2.5).unwrap();
+            hoja.write_string(3, 0, "Sal").unwrap();
+            hoja.write_string(3, 1, "g").unwrap();
+            hoja.write_number(3, 2, 10.0).unwrap();
+            // Cabecera repetida: debe descartarse por `palabras_fila_ignorada`.
+            hoja.write_string(4, 0, "Material").unwrap();
+            hoja.write_string(4, 1, "kg").unwrap();
+            hoja.write_number(4, 2, 99.0).unwrap();
+
+            libro.save(&ruta).expect("el xlsx de prueba debe guardarse");
+        }
+
+        let mapeo = mapeo_con(|mapeo| {
+            mapeo.sinonimos_ingrediente = vec!["producto".to_string()];
+            mapeo.sinonimos_unidad = vec!["medida".to_string()];
+            mapeo.sinonimos_cantidad = vec!["qty".to_string()];
+            mapeo.filas_cabecera_ignoradas = 1;
+            mapeo.palabras_fila_ignorada = vec!["material".to_string()];
+        });
+        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+
+        let resultado =
+            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas)
+                .expect("debe leer el archivo");
+
+        let _ = std::fs::remove_file(&ruta);
+
+        assert!(
+            resultado.advertencias.is_empty(),
+            "advertencias inesperadas: {:?}",
+            resultado.advertencias
+        );
+        assert_eq!(resultado.ingredientes.len(), 2);
+
+        let harina = resultado
+            .ingredientes
+            .iter()
+            .find(|item| item.nombre == "Harina")
+            .expect("debe estar Harina");
+        assert_eq!(harina.unidad, "Kilo");
+        assert!((harina.cantidad - 2.5).abs() < 1e-9);
+
+        assert!(
+            resultado
+                .ingredientes
+                .iter()
+                .all(|item| !item.nombre.eq_ignore_ascii_case("Material")),
+            "la cabecera repetida no debe llegar a los ingredientes"
+        );
+    }
+
+    #[test]
+    fn unifica_unidades_al_leer_un_xlsx() {
+        use rust_xlsxwriter::Workbook;
+
+        let ruta = std::env::temp_dir().join(format!(
+            "appgastronomia_unidades_{}.xlsx",
+            std::process::id()
+        ));
+        let ruta_texto = ruta.to_string_lossy().to_string();
+
+        {
+            let mut libro = Workbook::new();
+            let hoja = libro.add_worksheet();
+
+            hoja.write_string(0, 0, "Ingrediente").unwrap();
+            hoja.write_string(0, 1, "Unidad").unwrap();
+            hoja.write_string(0, 2, "Cantidad").unwrap();
+
+            // La misma unidad escrita de tres formas distintas.
+            for (indice, (unidad, cantidad)) in
+                [("LT", 2.0), ("lts", 3.0), ("litro", 1.0)].iter().enumerate()
+            {
+                let fila = (indice + 1) as u32;
+                hoja.write_string(fila, 0, "Aceite").unwrap();
+                hoja.write_string(fila, 1, *unidad).unwrap();
+                hoja.write_number(fila, 2, *cantidad).unwrap();
+            }
+
+            libro.save(&ruta).expect("el xlsx de prueba debe guardarse");
+        }
+
+        let reglas = ReglasColumnas::default();
+        let resultado =
+            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas)
+                .expect("debe leer el archivo");
+
+        let _ = std::fs::remove_file(&ruta);
+
+        assert!(resultado.advertencias.is_empty());
+        assert_eq!(resultado.ingredientes.len(), 1);
+
+        let aceite = &resultado.ingredientes[0];
+        assert_eq!(aceite.nombre, "Aceite");
+        assert_eq!(aceite.unidad, "Litro");
+        assert!((aceite.cantidad - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn un_archivo_sin_cabecera_devuelve_error_con_el_motivo() {
+        use rust_xlsxwriter::Workbook;
+
+        let ruta = std::env::temp_dir().join(format!(
+            "appgastronomia_sin_cabecera_{}.xlsx",
+            std::process::id()
+        ));
+        let ruta_texto = ruta.to_string_lossy().to_string();
+
+        {
+            let mut libro = Workbook::new();
+            let hoja = libro.add_worksheet();
+            hoja.write_string(0, 0, "Foo").unwrap();
+            hoja.write_string(0, 1, "Bar").unwrap();
+            hoja.write_string(0, 2, "Baz").unwrap();
+            libro.save(&ruta).expect("el xlsx de prueba debe guardarse");
+        }
+
+        let reglas = ReglasColumnas::default();
+        let error =
+            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas)
+                .expect_err("no debe leer nada");
+
+        let _ = std::fs::remove_file(&ruta);
+
+        assert!(
+            error.contains("No se pudo leer ninguna hoja"),
+            "error inesperado: {error}"
+        );
+        assert!(
+            error.contains("Sheet1"),
+            "el error debe indicar la hoja: {error}"
+        );
     }
 }
