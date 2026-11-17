@@ -7,6 +7,9 @@ mod excel;
 mod colores;
 mod vinculaciones;
 mod exportacion;
+mod vista;
+mod ajustes;
+mod autoprocesado;
 
 use tauri::Manager;
 
@@ -54,7 +57,14 @@ pub fn run() {
             colores::guardar_version_colores_filas,
             vinculaciones::obtener_vinculaciones,
             vinculaciones::guardar_vinculaciones,
-            exportacion::exportar_excel
+            exportacion::exportar_excel,
+            vista::obtener_vista_compacta,
+            vista::guardar_vista_compacta,
+            autoprocesado::obtener_auto_procesar,
+            autoprocesado::guardar_auto_procesar,
+            ajustes::obtener_ajustes_procesamiento,
+            ajustes::guardar_ajustes_procesamiento,
+            ajustes::abrir_carpeta_datos
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

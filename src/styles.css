@@ -178,8 +178,11 @@ body {
 /* Acciones del panel de archivos */
 .sidebar-actions {
     display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
     gap: 6px;
 }
+.sidebar-actions > #btnVincular { flex: 1 1 100%; }
 .btn-secondary {
     flex: 1 1 0;
     min-width: 0;
@@ -202,6 +205,93 @@ body {
 .btn-secondary .icon { width: 14px; height: 14px; color: var(--text-muted); }
 .btn-secondary:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .btn-secondary:hover .icon { color: var(--accent); }
+
+/* Botón "Procesar" + interruptor "Auto" */
+.process-group {
+    flex: 1 1 100%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.process-group > #btnProcesarSeleccionadas {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 7px 6px;
+    gap: 5px;
+}
+
+/* Interruptor tipo switch, con los colores del tema */
+.auto-switch {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-faint);
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+/* El checkbox real queda oculto pero sigue siendo accesible por teclado */
+.auto-switch input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+.auto-switch-track {
+    position: relative;
+    flex-shrink: 0;
+    width: 28px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--border-strong);
+    transition: background 0.16s ease;
+}
+.auto-switch-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--panel);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+    transition: transform 0.16s ease;
+}
+.auto-switch:hover { color: var(--accent); }
+.auto-switch:hover .auto-switch-track { background: var(--text-faint); }
+.auto-switch input:checked + .auto-switch-track { background: var(--accent); }
+.auto-switch:hover input:checked + .auto-switch-track { background: var(--accent-strong); }
+.auto-switch input:checked + .auto-switch-track .auto-switch-thumb {
+    transform: translateX(12px);
+}
+.auto-switch input:checked ~ .auto-switch-text { color: var(--accent); }
+.auto-switch input:focus-visible + .auto-switch-track {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Con auto-procesado activo el botón manual queda atenuado y deshabilitado */
+.btn-secondary:disabled,
+.btn-secondary[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.btn-secondary:disabled:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+    background: var(--panel);
+}
+.btn-secondary:disabled:hover .icon { color: var(--text-muted); }
 
 /* ÁREA CENTRAL */
 .main-center {
@@ -232,6 +322,31 @@ body {
     border-bottom: 1px solid var(--border);
 }
 .table-header .icon { color: var(--accent); }
+
+/* Indicador de autoprocesado: spinner + texto mientras corre el debounce o
+   la tarea asíncrona. `hidden` lo saca del flujo por completo. */
+.processing-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+}
+.processing-indicator[hidden] { display: none; }
+.processing-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--accent-soft);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: processingSpin 0.7s linear infinite;
+}
+@keyframes processingSpin {
+    to { transform: rotate(360deg); }
+}
 
 /* Título editable de la tabla consolidada */
 .table-title-input {
@@ -448,6 +563,85 @@ body {
 .data-table td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text); }
 .data-table tbody tr:hover { background: var(--hover); }
 .data-table tbody tr:last-child td { border-bottom: none; }
+
+/* Cantidad editable: el input ocupa la celda como si fuera texto y solo
+   muestra borde al pasar el mouse o al enfocar. */
+.data-table .celda-cantidad { padding: 0; }
+.input-cantidad {
+    width: 100%;
+    padding: 9px 14px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+.input-cantidad::-webkit-outer-spin-button,
+.input-cantidad::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+.input-cantidad:hover {
+    background: var(--panel);
+    border-color: var(--border);
+}
+.input-cantidad:focus {
+    outline: none;
+    background: var(--panel);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.input-cantidad.modificada-manualmente {
+    color: var(--accent);
+    font-weight: 600;
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+.input-cantidad.modificada-manualmente:hover { background: var(--accent-soft); }
+
+/* Cantidad total editable: mismo tratamiento que la cantidad, pero conserva
+   el azul del total calculado. Si se fija a mano se resalta en acento. */
+.data-table .celda-cantidad-total { padding: 0; }
+.input-cantidad-total {
+    width: 100%;
+    padding: 9px 14px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: #2563eb;
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+.input-cantidad-total::placeholder {
+    color: #999;
+    font-weight: 400;
+}
+.input-cantidad-total::-webkit-outer-spin-button,
+.input-cantidad-total::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+.input-cantidad-total:hover {
+    background: var(--panel);
+    border-color: var(--border);
+}
+.input-cantidad-total:focus {
+    outline: none;
+    background: var(--panel);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.input-cantidad-total.total-modificado-manualmente {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
 
 /* BARRA LATERAL DERECHA */
 .sidebar-right {
@@ -929,6 +1123,75 @@ body {
     transform: rotate(180deg);
 }
 
+/* --- Vista compacta de la lista de archivos --- */
+/* Barra con el toggle, fuera del <summary> para que el clic no pliegue el
+   acordeón de Archivos. */
+.file-list-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+.toggle-compacto {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    cursor: pointer;
+    user-select: none;
+}
+.toggle-compacto:hover { color: var(--accent); }
+.toggle-compacto input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--accent);
+}
+
+/* Una sola línea por archivo: elipsis en el nombre y menos aire vertical.
+   La clase vive en el <ul>, así sobrevive a los repintados de la lista. */
+.file-list.modo-compacto .excel-file-summary {
+    flex-wrap: nowrap;
+    align-items: center;
+    padding: 3px 8px;
+}
+.file-list.modo-compacto .file-name {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.file-list.modo-compacto .sheet-item {
+    padding: 2px 8px;
+}
+.file-list.modo-compacto .sheet-name {
+    display: block;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Los chips de grupo comparten la fila en lugar de saltar debajo, pero ceden
+   espacio al nombre del archivo y se recortan si no entran. */
+.file-list.modo-compacto .excel-file-tags {
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    min-width: 0;
+    max-width: 55%;
+    margin-top: 0;
+    overflow: hidden;
+}
+.file-list.modo-compacto .excel-file-tags .file-group-tag {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
 /* Menú de contexto de los archivos */
 .context-menu {
     position: fixed;
@@ -1027,6 +1290,11 @@ body {
 
 /* Menú de colores de una fila de ingredientes */
 .context-menu-colores { padding: 6px; gap: 6px; }
+.context-menu-separator {
+    height: 1px;
+    margin: 0 2px;
+    background: var(--border);
+}
 .color-grid {
     display: grid;
     grid-template-columns: repeat(4, 18px);
@@ -1598,6 +1866,269 @@ body {
     font-size: 11px;
     color: var(--text-faint);
 }
+
+/* --- Modal "Ajustes de Procesamiento" --- */
+.settings-modal {
+    width: min(680px, 100%);
+    max-height: min(660px, 90vh);
+}
+
+/* El cuerpo no scrollea: lo hace el panel de la pestaña activa. */
+.settings-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    padding: 14px 16px 0;
+    overflow: hidden;
+}
+
+.settings-note {
+    flex-shrink: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.settings-tabs {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.settings-tabbar {
+    display: flex;
+    flex-shrink: 0;
+    gap: 2px;
+    border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+    padding: 8px 12px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-tab:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.settings-tab.active {
+    border-color: var(--border);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.settings-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.settings-tabpanels {
+    flex: 1;
+    min-height: 0;
+    padding: 14px 2px 16px;
+    overflow-y: auto;
+}
+
+/* Se oculta por clase: el overlay usa display:flex y `hidden` no basta. */
+.settings-panel {
+    display: none;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.settings-panel.active {
+    display: flex;
+}
+
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.settings-section-title {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.settings-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.settings-label {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.settings-input {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12.5px;
+    outline: none;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.settings-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.settings-input::placeholder { color: var(--text-faint); }
+
+.settings-select {
+    cursor: pointer;
+}
+
+.settings-hint {
+    font-size: 10.5px;
+    color: var(--text-faint);
+    line-height: 1.4;
+}
+
+.settings-check {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+}
+
+.settings-check input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.settings-check-label {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.settings-check-hint {
+    flex-basis: 100%;
+    padding-left: 21px;
+}
+
+.settings-check-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+}
+
+.settings-system-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.settings-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.settings-cancel {
+    padding: 7px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.settings-cancel:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.settings-danger {
+    padding: 7px 14px;
+    border: 1px solid #b42318;
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: #b42318;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.settings-danger:hover {
+    border-color: #912018;
+    background: #fef3f2;
+    color: #912018;
+}
+
+.settings-save {
+    padding: 7px 14px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: #fff;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+.settings-save:hover {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+}
+.settings-save:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+@media (max-width: 520px) {
+    .settings-grid,
+    .settings-check-grid { grid-template-columns: 1fr; }
+    .settings-tab { padding: 8px 8px; }
+}
+
 
 /* Chips de grupos bajo el nombre del archivo (columna izquierda principal) */
 .excel-file-summary {

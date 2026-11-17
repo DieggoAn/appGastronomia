@@ -20,6 +20,10 @@
             <span class="banner-version">v0.1</span>
         </div>
         <nav class="banner-buttons" aria-label="Acciones globales">
+            <button class="btn-nav" type="button" id="btnAjustesProcesamiento" title="Ajustes de procesamiento (delay y sinónimos de columnas)">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></svg>
+                <span class="btn-label">Ajustes</span>
+            </button>
             <button class="btn-nav" type="button" id="btnExportExcel" title="Exportar las filas visibles a Excel (.xlsx)">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
                 <span class="btn-label">Excel</span>
@@ -45,6 +49,12 @@
                         Limpiar
                     </button>
                 </summary>
+                <div class="file-list-toolbar">
+                    <label class="toggle-compacto" title="Mostrar los archivos en una sola línea, con el texto truncado y menos espacio entre ítems">
+                        <input type="checkbox" id="chkVistaCompacta">
+                        <span>Vista compacta</span>
+                    </label>
+                </div>
                 <ul class="file-list" id="fileList">
                     <!-- Los archivos se cargan dinámicamente desde main.js -->
                 </ul>
@@ -63,10 +73,19 @@
                 </div>
             </details>
             <div class="sidebar-actions">
-                <button class="btn-secondary" type="button" id="btnProcesarSeleccionadas" title="Procesar hojas seleccionadas">
-                    <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-                    Procesar
-                </button>
+                <div class="process-group" id="grupoProcesar">
+                    <button class="btn-secondary" type="button" id="btnProcesarSeleccionadas" title="Auto-procesar activo: las hojas se procesan automáticamente" disabled>
+                        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                        Procesar
+                    </button>
+                    <label class="auto-switch" title="Procesar automáticamente al cambiar de hoja o editar la tabla">
+                        <input type="checkbox" id="chkAutoProcesar" checked>
+                        <span class="auto-switch-track" aria-hidden="true">
+                            <span class="auto-switch-thumb"></span>
+                        </span>
+                        <span class="auto-switch-text">Auto</span>
+                    </label>
+                </div>
                 <button class="btn-secondary" type="button" id="btnVincular" title="Vincular archivos">
                     <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                     Vincular
@@ -85,6 +104,10 @@
                         <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
                     </svg>
                     <input type="text" id="tituloConsolidado" class="table-title-input" value="Consolidado de ingredientes" aria-label="Título de la tabla consolidada">
+                    <span class="processing-indicator ocultar-en-impresion" id="estadoProcesamiento" role="status" aria-live="polite" hidden>
+                        <span class="processing-spinner" aria-hidden="true"></span>
+                        <span class="processing-text">Procesando…</span>
+                    </span>
                     <button class="btn-toolbar" type="button" id="btnFiltrarColor" title="Mostrar solo las filas de un color" aria-haspopup="menu" aria-expanded="false">
                         <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg>
                         <span id="filtrarColorLabel">Filtrar por color</span>
@@ -95,7 +118,7 @@
                             <circle cx="12" cy="12" r="3"/>
                             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                         </svg>
-                        <span>Ajustes</span>
+                        <span>Colores</span>
                     </button>
                 </div>
 
