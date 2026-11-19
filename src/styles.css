@@ -14,6 +14,99 @@
     --radius-md: 6px;
 }
 
+/* --- TEMA OSCURO ---
+   El JS alterna `modo-claro` / `modo-oscuro` en <body>. Como casi toda la app
+   usa estas variables, basta redefinirlas para cambiar el aspecto completo.
+   La transición suaviza el cambio sin animar cada interacción. */
+body {
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+body.modo-oscuro {
+    color-scheme: dark;
+    --accent: #c84949;
+    --accent-strong: #e06060;
+    --accent-soft: #3a2424;
+    --text: #e9e6e5;
+    --text-muted: #b1aaa8;
+    --text-faint: #857e7c;
+    --border: #3a3533;
+    --border-strong: #504846;
+    --bg: #1a1817;
+    --panel: #232020;
+    --hover: #2e2a29;
+}
+
+/* Superficies principales: mismo suavizado que el fondo del body. */
+body.modo-oscuro .app-container,
+body.modo-oscuro .sidebar-left,
+body.modo-oscuro .sidebar-right,
+body.modo-oscuro .table-container,
+body.modo-oscuro .table-header,
+body.modo-oscuro .section-box,
+body.modo-oscuro .saved-sections-box,
+body.modo-oscuro .data-table th,
+body.modo-oscuro .data-table td,
+body.modo-oscuro .settings-section,
+body.modo-oscuro .settings-input,
+body.modo-oscuro .colors-modal,
+body.modo-oscuro .context-menu,
+body.modo-oscuro .color-filter-menu {
+    transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Colores fijos que no salen de las variables. */
+body.modo-oscuro .input-cantidad-total {
+    color: #7fb0ff;
+}
+
+body.modo-oscuro .input-cantidad-total.total-modificado-manualmente {
+    color: var(--accent);
+}
+
+body.modo-oscuro .input-cantidad-total::placeholder {
+    color: var(--text-faint);
+}
+
+/* El input de comentarios lleva borde #ccc inline: solo un !important de autor
+   puede anularlo. */
+body.modo-oscuro .input-comentario {
+    background: var(--panel) !important;
+    color: var(--text) !important;
+    border-color: var(--border-strong) !important;
+}
+
+body.modo-oscuro ::-webkit-scrollbar-thumb {
+    background: #4a4442;
+}
+
+body.modo-oscuro ::-webkit-scrollbar-thumb:hover {
+    background: #5d5553;
+}
+
+/* Acciones destructivas (quitar sinónimo, restablecer todo). */
+body.modo-oscuro .settings-list-btn-danger:hover,
+body.modo-oscuro .settings-list-btn-x:hover {
+    border-color: #7a3434;
+    background: #3a2424;
+    color: #ff8f88;
+}
+
+body.modo-oscuro .settings-danger {
+    border-color: #a34a4a;
+    color: #ff8f88;
+}
+
+body.modo-oscuro .settings-danger:hover {
+    border-color: #c25a5a;
+    background: #3a2424;
+    color: #ffb1ab;
+}
+
+body.modo-oscuro .colors-modal-overlay {
+    background: rgba(0, 0, 0, 0.55);
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
@@ -152,6 +245,46 @@ body {
     transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
 .btn-add-file:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+/* Agrupa "Agregar Excel" con "Eliminar seleccionados" para que queden juntos. */
+.sidebar-file-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Acción destructiva sobre los archivos marcados en la lista. */
+.btn-delete-selected {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
+    padding: 8px;
+    border-radius: var(--radius-md);
+    font-weight: 500;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease, opacity 0.12s ease;
+}
+.btn-delete-selected .icon { color: currentColor; }
+.btn-delete-selected:hover:not(:disabled) {
+    border-color: #b42318;
+    color: #b42318;
+    background: #fef3f2;
+}
+body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
+    border-color: #c25a5a;
+    color: #ff8f88;
+    background: #3a2424;
+}
+.btn-delete-selected:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
 
 /* Acción discreta dentro del encabezado de Archivos */
 .btn-summary-action {
@@ -940,6 +1073,51 @@ body {
 .saved-list li:hover { background: var(--hover); }
 .saved-list li:last-child { border-bottom: none; }
 .saved-list .saved-name { flex: 1; font-weight: 500; }
+
+/* Vista compacta de la lista de grupos (Ajustes → General). La clase vive en
+   el <ul>, así sobrevive a los repintados que hace la paginación. */
+.saved-list.modo-compacto li { padding: 3px 8px; }
+.saved-list.modo-compacto .saved-name {
+    display: block;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Paginación de grupos: hermano del <ul> para no desaparecer al repintarlo. */
+.saved-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+}
+.saved-pagination[hidden] { display: none; }
+.saved-pagination-info {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.btn-pagination {
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.btn-pagination:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+.btn-pagination:disabled { opacity: 0.45; cursor: default; }
 .btn-delete-saved {
     background: transparent;
     border: none;
@@ -979,6 +1157,36 @@ body {
     background: var(--accent);
     border-color: var(--accent);
     color: #fff;
+}
+
+/* Importar grupos desde Excel: acción del encabezado "Secciones guardadas" */
+.btn-import-groups {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 7px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease, opacity 0.12s ease;
+}
+
+.btn-import-groups:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.btn-import-groups:disabled {
+    opacity: 0.55;
+    cursor: default;
 }
 
 /* Añade esto en styles.css */
@@ -1123,34 +1331,9 @@ body {
     transform: rotate(180deg);
 }
 
-/* --- Vista compacta de la lista de archivos --- */
-/* Barra con el toggle, fuera del <summary> para que el clic no pliegue el
-   acordeón de Archivos. */
-.file-list-toolbar {
-    display: flex;
-    justify-content: flex-end;
-    padding: 4px 8px 0;
-    border-bottom: 1px solid var(--border);
-}
-.toggle-compacto {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.4px;
-    text-transform: uppercase;
-    color: var(--text-faint);
-    cursor: pointer;
-    user-select: none;
-}
-.toggle-compacto:hover { color: var(--accent); }
-.toggle-compacto input[type="checkbox"] {
-    margin: 0;
-    cursor: pointer;
-    accent-color: var(--accent);
-}
-
+/* --- Vista compacta de la lista de archivos ---
+   El control vive ahora en Ajustes → General; aquí solo queda el estilo que
+   aplica la clase al <ul>. */
 /* Una sola línea por archivo: elipsis en el nombre y menos aire vertical.
    La clase vive en el <ul>, así sobrevive a los repintados de la lista. */
 .file-list.modo-compacto .excel-file-summary {
@@ -2050,6 +2233,91 @@ body {
     padding-left: 21px;
 }
 
+/* --- Interruptores (toggle switches) del modal de ajustes --- */
+/* Estructura: título arriba, pastilla + texto en medio y ayuda abajo. */
+.settings-toggle-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.settings-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    cursor: pointer;
+    user-select: none;
+}
+
+/* El checkbox real queda oculto pero sigue siendo accesible por teclado. */
+.settings-toggle input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.settings-toggle-track {
+    position: relative;
+    flex-shrink: 0;
+    width: 34px;
+    height: 20px;
+    border-radius: 999px;
+    background: var(--border-strong);
+    transition: background 0.18s ease;
+}
+
+.settings-toggle-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--panel);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    transition: transform 0.18s ease;
+}
+
+.settings-toggle-text {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: color 0.18s ease;
+}
+
+.settings-toggle:hover .settings-toggle-track { background: var(--text-faint); }
+.settings-toggle:hover .settings-toggle-text { color: var(--text); }
+
+.settings-toggle input:checked + .settings-toggle-track {
+    background: var(--accent);
+}
+
+.settings-toggle:hover input:checked + .settings-toggle-track {
+    background: var(--accent-strong);
+}
+
+.settings-toggle input:checked + .settings-toggle-track .settings-toggle-thumb {
+    transform: translateX(14px);
+}
+
+.settings-toggle input:checked ~ .settings-toggle-text {
+    color: var(--accent);
+}
+
+.settings-toggle input:focus-visible + .settings-toggle-track {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .settings-check-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2087,58 +2355,18 @@ body {
     color: var(--accent-strong);
 }
 
-/* --- Asociaciones de ingredientes: alias → nombre canónico --- */
-.settings-map-list {
-    display: flex;
-    flex-direction: column;
+/* --- Alta de unidades: estándar + botón --- */
+.settings-map-add {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 6px;
-}
-
-.settings-map-item {
-    display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    padding: 5px 6px 5px 9px;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-}
-
-.settings-map-alias,
-.settings-map-name {
-    max-width: 200px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12px;
-}
-
-.settings-map-alias {
-    color: var(--text-muted);
-}
-
-.settings-map-name {
-    color: var(--text);
-    font-weight: 500;
-}
-
-.settings-map-arrow {
-    color: var(--text-faint);
-    font-size: 12px;
 }
 
 .settings-map-input {
     flex: 1 1 130px;
     min-width: 100px;
     padding: 4px 6px;
-}
-
-.settings-map-add {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-    gap: 6px;
-    align-items: center;
 }
 
 /* --- Tablas de pares: concepto (izquierda) → sinónimos (derecha) --- */
@@ -2224,31 +2452,45 @@ body {
     .settings-pair-row { grid-template-columns: 1fr; gap: 6px; }
 }
 
+/* Lista vertical: cada sinónimo ocupa una fila completa con su botón ×. */
 .settings-list-items {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    flex-direction: column;
+    gap: 4px;
     min-height: 26px;
 }
 
 .settings-list-item {
     display: flex;
     align-items: center;
-    gap: 2px;
-    max-width: 100%;
-    padding: 2px 4px 2px 8px;
+    justify-content: space-between;
+    gap: 4px;
+    width: 100%;
+    padding: 4px 5px 4px 9px;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
     background: var(--bg);
 }
 
+.settings-list-item:hover {
+    border-color: var(--border-strong);
+    background: var(--panel);
+}
+
 .settings-list-value {
-    max-width: 220px;
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 12px;
     color: var(--text);
+}
+
+.settings-list-edit-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 4px 6px;
 }
 
 .settings-list-btn {
@@ -2276,6 +2518,24 @@ body {
 }
 
 .settings-list-btn-danger:hover {
+    border-color: #fecdca;
+    background: #fef3f2;
+    color: #b42318;
+}
+
+/* Botón pequeño para quitar un sinónimo de la lista. */
+.settings-list-btn-x {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--text-faint);
+}
+
+.settings-list-btn-x:hover {
     border-color: #fecdca;
     background: #fef3f2;
     color: #b42318;
@@ -2540,18 +2800,25 @@ body {
         text-align: center;
     }
 
+    /* --- COLUMNAS OCULTAS EN LA EXPORTACIÓN ---
+       La hoja de impresión incluye todas las columnas y marca las que el
+       usuario no eligió. Así el PDF conserva el mismo orden y solo se
+       imprimen las seleccionadas. */
+    .ocultar-en-exportacion { display: none !important; }
+
     /* --- BLANCO Y NEGRO ---
        Se anula cualquier fondo, incluidos los `style` inline con los que la
        tabla pinta los colores de fila (un !important de autor gana al inline).
-       Tambien cubre clases de color tipo .fila-rojo / .fila-verde. */
-    body.imprimiendo .solo-impresion,
-    body.imprimiendo .solo-impresion table,
-    body.imprimiendo .solo-impresion thead,
-    body.imprimiendo .solo-impresion tbody,
-    body.imprimiendo .solo-impresion tr,
-    body.imprimiendo .solo-impresion th,
-    body.imprimiendo .solo-impresion td,
-    body.imprimiendo [class*="fila-"] {
+       Tambien cubre clases de color tipo .fila-rojo / .fila-verde.
+       La regla se desactiva cuando se pidió "Incluir colores". */
+    body.imprimiendo:not(.imprimiendo-con-color) .solo-impresion,
+    body.imprimiendo:not(.imprimiendo-con-color) .solo-impresion table,
+    body.imprimiendo:not(.imprimiendo-con-color) .solo-impresion thead,
+    body.imprimiendo:not(.imprimiendo-con-color) .solo-impresion tbody,
+    body.imprimiendo:not(.imprimiendo-con-color) .solo-impresion tr,
+    body.imprimiendo:not(.imprimiendo-con-color) .solo-impresion th,
+    body.imprimiendo:not(.imprimiendo-con-color) .solo-impresion td,
+    body.imprimiendo:not(.imprimiendo-con-color) [class*="fila-"] {
         background: #fff !important;
         background-color: #fff !important;
         background-image: none !important;
@@ -2559,6 +2826,19 @@ body {
         box-shadow: none !important;
         -webkit-print-color-adjust: economy;
         print-color-adjust: economy;
+    }
+
+    /* --- COLORES EN LA EXPORTACIÓN ---
+       Con "Incluir colores" se respetan los fondos de fila de la hoja de
+       impresión (se aplican como style inline en cada <tr>). */
+    body.imprimiendo-con-color .solo-impresion,
+    body.imprimiendo-con-color .solo-impresion table,
+    body.imprimiendo-con-color .solo-impresion thead,
+    body.imprimiendo-con-color .solo-impresion tbody,
+    body.imprimiendo-con-color .solo-impresion tr,
+    body.imprimiendo-con-color .solo-impresion td {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
     }
 
     .solo-impresion .print-table {
@@ -2602,4 +2882,36 @@ body {
         appearance: none;
     }
     body.imprimiendo .code-select-chevron { display: none !important; }
+}
+/* --- Conflicto al importar un grupo que ya existe --- */
+.import-conflict-modal {
+    width: min(430px, 100%);
+}
+
+.import-conflict-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+}
+
+.import-conflict-body p { margin: 0; }
+
+.import-conflict-name { font-weight: 600; }
+
+.import-conflict-hint {
+    font-size: 11.5px;
+    color: var(--text-muted);
+}
+
+.import-conflict-footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border);
 }

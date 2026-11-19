@@ -49,12 +49,6 @@
                         Limpiar
                     </button>
                 </summary>
-                <div class="file-list-toolbar">
-                    <label class="toggle-compacto" title="Mostrar los archivos en una sola línea, con el texto truncado y menos espacio entre ítems">
-                        <input type="checkbox" id="chkVistaCompacta">
-                        <span>Vista compacta</span>
-                    </label>
-                </div>
                 <ul class="file-list" id="fileList">
                     <!-- Los archivos se cargan dinámicamente desde main.js -->
                 </ul>
@@ -91,10 +85,21 @@
                     Vincular
                 </button>
             </div>
-            <button class="btn-add-file" id="btnAddExcel" type="button">
-                <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-                Agregar Excel
-            </button>
+            <div class="sidebar-file-actions">
+                <button class="btn-add-file" id="btnAddExcel" type="button">
+                    <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                    Agregar Excel
+                </button>
+                <button class="btn-delete-selected" id="btnEliminarSeleccionados" type="button" disabled title="Elimina de la lista los archivos con la casilla marcada">
+                    <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M3 6h18"/>
+                        <path d="M8 6V4h8v2"/>
+                        <path d="M19 6l-1 14H6L5 6"/>
+                        <path d="M10 11v6M14 11v6"/>
+                    </svg>
+                    Eliminar seleccionados
+                </button>
+            </div>
         </aside>
 
         <main class="main-center">
@@ -138,7 +143,7 @@
                         </tr>
                     </thead>
                     <tbody id="tablaConsolidadaBody">
-                        <tr><td colspan="6" style="text-align:center; color:#888;">Haz clic en el nombre de una hoja para procesarla</td></tr>
+                        <tr><td colspan="6" style="text-align:center; color: var(--text-muted);">Haz clic en el nombre de una hoja para procesarla</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -196,10 +201,23 @@
             <div class="saved-sections-box">
                 <div class="section-box-header">
                     <span>Secciones guardadas</span>
+                    <button class="btn-import-groups" type="button" id="btnImportarGruposExcel" title="Crea grupos y secciones a partir de un archivo Excel">
+                        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <path d="M7 10l5 5 5-5"/>
+                            <path d="M12 15V3"/>
+                        </svg>
+                        Importar Grupos
+                    </button>
                 </div>
                 <ul class="saved-list" id="savedList">
                     <!-- Grupos guardados generados dinámicamente -->
                 </ul>
+                <div class="saved-pagination" id="savedPagination" hidden>
+                    <button class="btn-pagination" type="button" id="btnGruposAnterior">Anterior</button>
+                    <span class="saved-pagination-info" id="savedPaginationInfo"></span>
+                    <button class="btn-pagination" type="button" id="btnGruposSiguiente">Siguiente</button>
+                </div>
             </div>
         </aside>
     </div>

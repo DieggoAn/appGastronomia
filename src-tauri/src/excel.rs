@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use tauri_plugin_store::StoreExt;
-use crate::ajustes::{AsociacionIngrediente, MapeoInsumos, UnidadEquivalencia};
+use crate::ajustes::{MapeoInsumos, UnidadEquivalencia};
 use crate::secciones::Seccion; // Para el comando calcular_total
 
 // --- 1. Structs (SIEMPRE al principio) ---
@@ -216,12 +216,11 @@ fn cantidad_de_celda(celda: &Data) -> f64 {
 
 // --- 2.c Detección de columnas ---
 
-/// Suma la cantidad de una fila recorriendo **todas** las columnas de cantidad
-/// detectadas en la cabecera (A, B, C, TP, TA, o una única "Cantidad").
+/// Suma la cantidad de una fila recorriendo las columnas de cantidad
+/// detectadas en la cabecera (normalmente una sola).
 ///
 /// Las celdas vacías y los índices que se salen del rango de la fila aportan
-/// `0.0`, así que una fila con un solo valor, con dos o con cinco se resuelve
-/// con el mismo código: no hay ramas especiales por cantidad de columnas.
+/// `0.0`, así que una fila con un solo valor se resuelve con el mismo código.
 fn cantidad_de_fila(fila: &[Data], columnas: &[usize]) -> f64 {
     columnas
         .iter()
@@ -287,18 +286,12 @@ pub struct ReglasColumnas {
     pub sinonimos_unidad: Vec<String>,
     pub sinonimos_cantidad: Vec<String>,
     pub sinonimos_total: Vec<String>,
-    pub etiquetas_cantidad_parcial: Vec<String>,
-    pub prefijos_cantidad: Vec<String>,
-    pub palabras_monetarias: Vec<String>,
     pub palabras_fila_ignorada: Vec<String>,
-    /// Pares (alias normalizado, nombre canónico visible).
-    pub asociaciones_ingredientes: Vec<(String, String)>,
     /// Pares (variante normalizada, unidad estándar visible). Incluye también
     /// la propia forma estándar como variante reconocida.
     pub unidades: Vec<(String, String)>,
     pub filas_cabecera_ignoradas: usize,
     pub filas_escaneo_cabecera: usize,
-    pub unidad_por_defecto: String,
 }
 
 impl Default for ReglasColumnas {
@@ -317,19 +310,10 @@ impl ReglasColumnas {
             sinonimos_unidad: normalizar_lista_ajustes(&mapeo.sinonimos_unidad),
             sinonimos_cantidad: normalizar_lista_ajustes(&mapeo.sinonimos_cantidad),
             sinonimos_total: normalizar_lista_ajustes(&mapeo.sinonimos_total),
-            etiquetas_cantidad_parcial: normalizar_lista_ajustes(
-                &mapeo.etiquetas_cantidad_parcial,
-            ),
-            prefijos_cantidad: normalizar_prefijos(&mapeo.prefijos_cantidad),
-            palabras_monetarias: normalizar_lista_ajustes(&mapeo.palabras_monetarias),
             palabras_fila_ignorada: normalizar_lista_ajustes(&mapeo.palabras_fila_ignorada),
-            asociaciones_ingredientes: normalizar_asociaciones(
-                &mapeo.asociaciones_ingredientes,
-            ),
             unidades: normalizar_unidades(&mapeo.unidades),
             filas_cabecera_ignoradas: mapeo.filas_cabecera_ignoradas.min(1_000) as usize,
             filas_escaneo_cabecera: mapeo.filas_escaneo_cabecera.min(500) as usize,
-            unidad_por_defecto: mapeo.unidad_por_defecto.trim().to_string(),
         };
 
         let mut faltantes: Vec<&str> = Vec::new();
@@ -340,11 +324,8 @@ impl ReglasColumnas {
         if reglas.sinonimos_unidad.is_empty() {
             faltantes.push("sinónimos de unidad");
         }
-        if reglas.sinonimos_cantidad.is_empty()
-            && reglas.sinonimos_total.is_empty()
-            && reglas.etiquetas_cantidad_parcial.is_empty()
-        {
-            faltantes.push("alguna regla de cantidad (sinónimos, total o etiquetas parciales)");
+        if reglas.sinonimos_cantidad.is_empty() && reglas.sinonimos_total.is_empty() {
+            faltantes.push("sinónimos de cantidad o de total");
         }
         if reglas.filas_escaneo_cabecera == 0 {
             faltantes.push("filas a examinar buscando la cabecera (mínimo 1)");
@@ -359,22 +340,6 @@ impl ReglasColumnas {
         }
 
         Ok(reglas)
-    }
-
-    /// Devuelve el nombre canónico configurado para un ingrediente, o el
-    /// original si no hay asociación. La comparación es por nombre normalizado.
-    pub fn nombre_asociado(&self, nombre: &str) -> String {
-        if self.asociaciones_ingredientes.is_empty() {
-            return nombre.to_string();
-        }
-
-        let clave = clave_ingrediente(nombre);
-
-        self.asociaciones_ingredientes
-            .iter()
-            .find(|(alias, _)| alias == &clave)
-            .map(|(_, canonico)| canonico.clone())
-            .unwrap_or_else(|| nombre.to_string())
     }
 
     /// Devuelve la forma estándar de una unidad de medida ("LT" → "Litro"),
@@ -393,32 +358,6 @@ impl ReglasColumnas {
             .map(|(_, estandar)| estandar.clone())
             .unwrap_or_else(|| original.to_string())
     }
-}
-
-/// Normaliza las asociaciones alias → nombre y descarta vacías o duplicadas.
-/// Si un alias se repite, gana la primera asociación.
-fn normalizar_asociaciones(asociaciones: &[AsociacionIngrediente]) -> Vec<(String, String)> {
-    let mut normalizadas: Vec<(String, String)> = Vec::new();
-
-    for asociacion in asociaciones {
-        let alias = normalizar_cabecera(&asociacion.alias);
-        let nombre = asociacion.nombre.trim().to_string();
-
-        if alias.is_empty() || nombre.is_empty() {
-            continue;
-        }
-
-        if normalizadas
-            .iter()
-            .any(|(alias_existente, _)| alias_existente == &alias)
-        {
-            continue;
-        }
-
-        normalizadas.push((alias, nombre));
-    }
-
-    normalizadas
 }
 
 /// Construye el mapa variante normalizada → unidad estándar.
@@ -474,55 +413,14 @@ fn normalizar_lista_ajustes(valores: &[String]) -> Vec<String> {
     normalizados
 }
 
-/// Como `normalizar_lista_ajustes`, pero conserva la puntuación interna y final:
-/// un prefijo configurado como "cant." debe seguir llevando su punto.
-fn normalizar_prefijos(valores: &[String]) -> Vec<String> {
-    let mut normalizados: Vec<String> = Vec::new();
-
-    for valor in valores {
-        let normalizado = normalizar_base(valor);
-        if normalizado.is_empty() || normalizados.contains(&normalizado) {
-            continue;
-        }
-
-        normalizados.push(normalizado);
-    }
-
-    normalizados
-}
-
-
-/// ¿La cabecera (ya normalizada) es monetaria? "Costo Total", "Valor Total",
-/// "Total $", "Precio unitario"…
-///
-/// Las palabras las configura el usuario; los símbolos de moneda se reconocen
-/// siempre porque no dependen del idioma del archivo.
-///
-/// Se usa para dos cosas: descartar esas columnas como cantidad y clasificar
-/// "Costo Total" aparte, para que nunca se confunda con "Total".
-fn es_columna_monetaria(cabecera_normalizada: &str, reglas: &ReglasColumnas) -> bool {
-    reglas
-        .palabras_monetarias
-        .iter()
-        .any(|palabra| cabecera_normalizada.contains(palabra.as_str()))
-        || cabecera_normalizada.contains('$')
-        || cabecera_normalizada.contains('€')
-        || cabecera_normalizada.contains('£')
-}
-
 /// ¿La cabecera es la columna autoritativa de cantidad total?
 ///
 /// **Filtro estricto**: se compara por igualdad exacta contra los sinónimos de
 /// total configurados (por defecto "total" y "total cantidad"). Nada de
 /// `contains("total")`, porque eso aceptaría "Costo Total", "Total Costo",
-/// "Valor Total", "Total Neto" o "Total $", que son dinero y no cantidad.
+/// "Valor Total" o "Total Neto", que son dinero y nunca se procesan.
 fn es_columna_total(celda: &str, reglas: &ReglasColumnas) -> bool {
     let normalizada = normalizar_cabecera(celda);
-
-    // Cualquier palabra monetaria descarta la columna antes de comparar.
-    if es_columna_monetaria(&normalizada, reglas) {
-        return false;
-    }
 
     reglas
         .sinonimos_total
@@ -530,49 +428,9 @@ fn es_columna_total(celda: &str, reglas: &ReglasColumnas) -> bool {
         .any(|sinonimo| sinonimo == &normalizada)
 }
 
-/// Detecta si una celda de cabecera es una columna de cantidad **parcial**
-/// —A, B, C, TP, TA— y devuelve su etiqueta canónica.
-///
-/// Acepta la letra sola y también variantes con prefijo: `"A"`, `"Cantidad A"`,
-/// `"Cant. B"`, `"CANTIDAD (TP)"`, `"CantidadA"`, `"A:"`. Tanto las etiquetas
-/// como los prefijos salen de los ajustes del usuario; el valor devuelto es la
-/// etiqueta configurada, lo que permite deduplicar ("A" y "Cantidad A" son la
-/// misma columna).
-fn etiqueta_cantidad_parcial(celda: &str, reglas: &ReglasColumnas) -> Option<String> {
-    let mut resto = normalizar_cabecera(celda);
-
-    // Prefijos habituales. Se elige el más largo que coincida para que
-    // "cantidad a" no quede como "idad a" aunque el orden configurado cambie.
-    let sin_prefijo = reglas
-        .prefijos_cantidad
-        .iter()
-        .filter(|prefijo| !prefijo.is_empty() && resto.starts_with(prefijo.as_str()))
-        .max_by_key(|prefijo| prefijo.len())
-        .map(|prefijo| resto[prefijo.len()..].trim().to_string());
-    if let Some(nuevo) = sin_prefijo {
-        resto = nuevo;
-    }
-
-    // Primera palabra y sin adornos: "a", "(a)", "a:", "a (kg)".
-    let etiqueta = resto
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .trim_matches(|c: char| !c.is_alphanumeric());
-
-    if etiqueta.is_empty() {
-        return None;
-    }
-
-    reglas
-        .etiquetas_cantidad_parcial
-        .iter()
-        .find(|configurada| configurada.as_str() == etiqueta)
-        .cloned()
-}
-
-/// ¿La cabecera es una columna de cantidad genérica? Se compara contra los
-/// sinónimos de cantidad configurados (por defecto "cantidad").
+/// ¿La cabecera es una columna de cantidad genérica? Se compara contra la
+/// lista única de sinónimos configurados (por defecto "cantidad", "cant",
+/// "ctdad", "peso" y "q").
 fn es_columna_cantidad_generica(celda: &str, reglas: &ReglasColumnas) -> bool {
     contiene_sinonimo(&normalizar_cabecera(celda), &reglas.sinonimos_cantidad)
 }
@@ -586,7 +444,8 @@ struct ColumnasHoja {
     nombre: usize,
     /// Índice de la columna de la unidad de medida.
     unidad: usize,
-    /// Índices de **todas** las columnas de cantidad (una o varias).
+    /// Índice de la columna de cantidad. Siempre una sola: la total si existe
+    /// o, si no, la primera que coincida con los sinónimos de cantidad.
     cantidad: Vec<usize>,
 }
 
@@ -599,13 +458,9 @@ struct ColumnasHoja {
 /// interfaz pueda mostrarlo tal cual.
 ///
 /// Jerarquía de la cantidad (de mayor a menor prioridad):
-/// 1. **Total exacto** → es la única fuente; se ignoran A/B/C/TP/TA.
-/// 2. **Desglose A/B/C/TP/TA** → se devuelven todas para sumarlas (y se
-///    ignora cualquier "Cantidad" genérica, que suele ser el total ya hecho).
-/// 3. **Primera columna de cantidad genérica** → comportamiento histórico.
-///
-/// Las columnas monetarias ("Costo Total", "Valor Total", "Total $"…) se
-/// descartan siempre como cantidad y se registran aparte.
+/// 1. **Total exacto** → es la única fuente.
+/// 2. **Primera columna de cantidad** → cualquiera de la lista unificada de
+///    sinónimos ("cantidad", "cant", "ctdad", "peso", "q"…).
 fn detectar_columnas(
     filas: &[Vec<String>],
     reglas: &ReglasColumnas,
@@ -616,33 +471,17 @@ fn detectar_columnas(
     for (indice_fila, celdas) in filas.iter().enumerate() {
         let mut nombre: Option<usize> = None;
         let mut unidad: Option<usize> = None;
-        let mut cantidad: Vec<usize> = Vec::new();
-        let mut etiquetas: Vec<String> = Vec::new();
         let mut cantidad_generica: Option<usize> = None;
         // Columna "Total" autoritativa (prioridad 1).
         let mut cantidad_total: Option<usize> = None;
-        // Columna de dinero: nunca es cantidad, se conserva aparte.
-        let mut columna_monetaria: Option<usize> = None;
 
         for (j, celda) in celdas.iter().enumerate() {
             if nombre.is_none() && es_columna_ingrediente(celda, reglas) {
                 nombre = Some(j);
             } else if unidad.is_none() && es_columna_unidad(celda, reglas) {
                 unidad = Some(j);
-            } else if columna_monetaria.is_none()
-                && es_columna_monetaria(&normalizar_cabecera(celda), reglas)
-            {
-                // Lo monetario se comprueba antes que "total", "a", "b"…, así
-                // "Cantidad Costo" o "Costo Total" no se cuelan como cantidad.
-                columna_monetaria = Some(j);
             } else if cantidad_total.is_none() && es_columna_total(celda, reglas) {
                 cantidad_total = Some(j);
-            } else if let Some(etiqueta) = etiqueta_cantidad_parcial(celda, reglas) {
-                // Una columna por etiqueta: "A" y "Cantidad A" son la misma.
-                if !etiquetas.contains(&etiqueta) {
-                    etiquetas.push(etiqueta);
-                    cantidad.push(j);
-                }
             } else if cantidad_generica.is_none()
                 && es_columna_cantidad_generica(celda, reglas)
             {
@@ -650,8 +489,7 @@ fn detectar_columnas(
             }
         }
 
-        let hay_cantidad =
-            cantidad_total.is_some() || !cantidad.is_empty() || cantidad_generica.is_some();
+        let hay_cantidad = cantidad_total.is_some() || cantidad_generica.is_some();
 
         let mut faltantes: Vec<&str> = Vec::new();
         if nombre.is_none() {
@@ -666,25 +504,12 @@ fn detectar_columnas(
 
         // Cabecera completa: se devuelve de inmediato.
         if faltantes.is_empty() {
-            // Prioridad 1: "Total" manda y descarta el desglose por completo.
-            // Prioridad 2: suma de A/B/C/TP/TA.
-            // Prioridad 3: primera "Cantidad" genérica.
-            let cantidad = if let Some(indice) = cantidad_total {
-                vec![indice]
-            } else if !cantidad.is_empty() {
-                cantidad
-            } else {
-                vec![cantidad_generica.expect("hay cantidad genérica")]
-            };
-
-            // Deja rastro de que la columna de dinero se vio y se ignoró para
-            // la cantidad (queda disponible si algún día se calcula el valor).
-            if let Some(indice) = columna_monetaria {
-                eprintln!(
-                    "[excel] Columna monetaria ignorada para la cantidad: {:?}",
-                    celdas[indice]
-                );
-            }
+            // "Total" manda; si no existe, se usa la primera columna de
+            // cantidad reconocida por la lista unificada.
+            let cantidad = cantidad_total
+                .or(cantidad_generica)
+                .map(|indice| vec![indice])
+                .expect("hay cantidad");
 
             return Ok(ColumnasHoja {
                 fila_cabecera: indice_fila,
@@ -745,10 +570,9 @@ fn describir_faltantes(faltantes: &[&str], reglas: &ReglasColumnas) -> String {
                 reglas.sinonimos_unidad.join(", ")
             )),
             "cantidad" => piezas.push(format!(
-                "falta una columna de cantidad (sinónimos: [{}]; total: [{}]; etiquetas: [{}])",
+                "falta una columna de cantidad (sinónimos: [{}]; total: [{}])",
                 reglas.sinonimos_cantidad.join(", "),
-                reglas.sinonimos_total.join(", "),
-                reglas.etiquetas_cantidad_parcial.join(", ")
+                reglas.sinonimos_total.join(", ")
             )),
             otro => piezas.push(format!("falta la columna de {otro}")),
         }
@@ -801,6 +625,10 @@ pub fn procesar_hojas_excel(
 
     procesar_archivo_con_reglas(&ruta, nombres_hojas, &reglas)
 }
+
+/// Unidad aplicada cuando la fila no indica una. Antes era configurable desde
+/// "Importación y Excel"; ahora es un valor fijo para no perder filas.
+const UNIDAD_POR_DEFECTO: &str = "UNIDAD";
 
 /// Núcleo de lectura separado del comando: así se puede probar con un `.xlsx`
 /// real sin necesitar un `AppHandle` de Tauri.
@@ -862,9 +690,10 @@ fn procesar_archivo_con_reglas(
                 .map(|c| c.to_string().trim().to_string())
                 .unwrap_or_default();
 
-            // Unidad por defecto configurada, para celdas que vienen vacías.
+            // Unidad fija para celdas que vienen vacías: ya no se configura
+            // desde el modal, pero se conserva el comportamiento histórico.
             if um.is_empty() {
-                um = reglas.unidad_por_defecto.clone();
+                um = UNIDAD_POR_DEFECTO.to_string();
             }
 
             if nombre.is_empty() || um.is_empty() {
@@ -886,12 +715,7 @@ fn procesar_archivo_con_reglas(
                 continue;
             }
 
-            // Asociación alias → nombre canónico configurada por el usuario en
-            // "Mapeo de Insumos". Se aplica después de descartar filas no dato.
-            let nombre = reglas.nombre_asociado(&nombre);
-
-            // Suma de TODAS las columnas de cantidad detectadas (A, B, C,
-            // TP, TA o una única "Cantidad"). Ver `cantidad_de_fila`.
+            // Cantidad de la columna detectada (total o la primera cantidad).
             let cantidad = cantidad_de_fila(row, &columnas.cantidad);
 
             let clave_nombre = clave_ingrediente(&nombre);
@@ -1192,49 +1016,9 @@ mod pruebas {
     }
 
     #[test]
-    fn reconoce_columnas_de_cantidad_parcial() {
-        for (celda, esperado) in [
-            ("a", "a"),
-            ("b", "b"),
-            ("c", "c"),
-            ("tp", "tp"),
-            ("ta", "ta"),
-            ("cantidad a", "a"),
-            ("cantidad b", "b"),
-            ("cant. c", "c"),
-            ("cantidad (tp)", "tp"),
-            ("cantidada", "a"),
-            ("a:", "a"),
-            ("a (kg)", "a"),
-        ] {
-            assert_eq!(
-                etiqueta_cantidad_parcial(celda, &ReglasColumnas::default()).as_deref(),
-                Some(esperado),
-                "no reconoció {celda:?}"
-            );
-        }
-
-        // No son columnas de cantidad parcial.
-        for celda in [
-            "cantidad",
-            "cantidad total",
-            "ingrediente",
-            "descripción",
-            "unidad",
-            "u/m",
-            "comentarios",
-        ] {
-            assert_eq!(
-                etiqueta_cantidad_parcial(celda, &ReglasColumnas::default()),
-                None,
-                "confundió {celda:?} con una columna parcial"
-            );
-        }
-    }
-
-    #[test]
     fn suma_una_o_varias_columnas_de_cantidad() {
-        // Fila: A = 5, B = 3, C vacía, TP = 2
+        // La detección devuelve una sola columna, pero la suma sigue siendo
+        // tolerante a varios índices (celdas vacías o fuera de rango).
         let fila = vec![
             Data::String("5".to_string()),
             Data::String("3".to_string()),
@@ -1242,13 +1026,9 @@ mod pruebas {
             Data::String("2".to_string()),
         ];
 
-        // A + B + TP = 10 (requisito del caso de negocio)
         assert_eq!(cantidad_de_fila(&fila, &[0, 1, 3]), 10.0);
-        // Una sola columna con valor
         assert_eq!(cantidad_de_fila(&fila, &[0]), 5.0);
-        // Celda vacía y un índice fuera de rango no rompen la suma
         assert_eq!(cantidad_de_fila(&fila, &[0, 2, 99]), 5.0);
-        // Sin columnas detectadas
         assert_eq!(cantidad_de_fila(&fila, &[]), 0.0);
     }
 
@@ -1266,16 +1046,15 @@ mod pruebas {
     }
 
     #[test]
-    fn detecta_desglose_abc_tp_ta() {
+    fn detecta_la_primera_columna_de_cantidad_con_etiquetas() {
         let filas = vec![
             // Fila de título: contiene "ingrediente" pero no unidad ni cantidad
             vec!["listado de ingredientes del casino".to_string()],
             vec![
                 "ingrediente".to_string(),
                 "unidad".to_string(),
-                "a".to_string(),
-                "b".to_string(),
-                "c".to_string(),
+                "cantidad a".to_string(),
+                "cantidad b".to_string(),
                 "tp".to_string(),
                 "ta".to_string(),
             ],
@@ -1286,11 +1065,12 @@ mod pruebas {
         assert_eq!(columnas.fila_cabecera, 1);
         assert_eq!(columnas.nombre, 0);
         assert_eq!(columnas.unidad, 1);
-        assert_eq!(columnas.cantidad, vec![2, 3, 4, 5, 6]);
+        // Se usa la primera columna que coincide con la lista de cantidad.
+        assert_eq!(columnas.cantidad, vec![2]);
     }
 
     #[test]
-    fn detecta_desglose_con_prefijo() {
+    fn detecta_cantidad_con_prefijo() {
         let filas = vec![vec![
             "ingrediente".to_string(),
             "u/m".to_string(),
@@ -1300,11 +1080,11 @@ mod pruebas {
 
         let columnas =
             detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
-        assert_eq!(columnas.cantidad, vec![2, 3]);
+        assert_eq!(columnas.cantidad, vec![2]);
     }
 
     #[test]
-    fn sin_desglose_usa_la_primera_cantidad() {
+    fn sin_total_usa_la_primera_cantidad() {
         // Comportamiento histórico: una sola columna, la primera con "cantidad"
         let filas = vec![vec![
             "ingrediente".to_string(),
@@ -1319,9 +1099,8 @@ mod pruebas {
     }
 
     #[test]
-    fn con_desglose_ignora_la_cantidad_generica() {
-        // "Cantidad" junto a "A" suele ser el total ya calculado: sumarlo
-        // duplicaría la cifra, así que gana el desglose.
+    fn ignora_las_etiquetas_sueltas_sin_sinonimo() {
+        // "a" ya no es una etiqueta de cantidad: solo cuenta la lista única.
         let filas = vec![vec![
             "ingrediente".to_string(),
             "unidad".to_string(),
@@ -1331,7 +1110,7 @@ mod pruebas {
 
         let columnas =
             detectar_columnas(&filas, &ReglasColumnas::default()).expect("debe encontrar la cabecera");
-        assert_eq!(columnas.cantidad, vec![3]);
+        assert_eq!(columnas.cantidad, vec![2]);
     }
 
     #[test]
@@ -1346,7 +1125,7 @@ mod pruebas {
     }
 
     #[test]
-    fn total_exacto_tiene_prioridad_sobre_el_desglose() {
+    fn total_exacto_tiene_prioridad_sobre_otras_columnas() {
         let filas = vec![vec![
             "ingrediente".to_string(),
             "unidad".to_string(),
@@ -1547,7 +1326,6 @@ mod pruebas {
         let mapeo = mapeo_con(|mapeo| {
             mapeo.sinonimos_cantidad.clear();
             mapeo.sinonimos_total.clear();
-            mapeo.etiquetas_cantidad_parcial.clear();
         });
 
         let error = ReglasColumnas::desde_mapeo(&mapeo).expect_err("debe fallar");
@@ -1559,21 +1337,23 @@ mod pruebas {
     }
 
     #[test]
-    fn las_etiquetas_parciales_son_configurables() {
-        let mapeo = mapeo_con(|mapeo| {
-            mapeo.etiquetas_cantidad_parcial = vec!["x".to_string(), "y".to_string()];
-        });
-        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
+    fn la_lista_unica_reconoce_abreviaturas_de_cantidad() {
+        let reglas = ReglasColumnas::default();
 
-        let filas = vec![vec![
-            "ingrediente".to_string(),
-            "unidad".to_string(),
-            "cantidad x".to_string(),
-            "y".to_string(),
-        ]];
-        let columnas = detectar_columnas(&filas, &reglas).expect("debe detectar la cabecera");
+        for cabecera in ["Cantidad", "CANT.", "Ctdad", "Peso", "Q"] {
+            assert!(
+                es_columna_cantidad_generica(cabecera, &reglas),
+                "debería reconocer {cabecera:?} como cantidad"
+            );
+        }
 
-        assert_eq!(columnas.cantidad, vec![2, 3]);
+        // Las etiquetas sueltas ya no se consideran cantidad.
+        for cabecera in ["A", "B", "TP", "TA", "Ingrediente", "Comentarios"] {
+            assert!(
+                !es_columna_cantidad_generica(cabecera, &reglas),
+                "no debería reconocer {cabecera:?} como cantidad"
+            );
+        }
     }
 
     #[test]
@@ -1624,24 +1404,6 @@ mod pruebas {
         // Los sinónimos largos conservan la tolerancia a plurales.
         assert!(es_columna_ingrediente("Ingredientes", &reglas));
         assert!(es_columna_ingrediente("Nombre del ingrediente", &reglas));
-    }
-
-    #[test]
-    fn aplica_asociaciones_de_ingredientes() {
-        let mapeo = mapeo_con(|mapeo| {
-            mapeo.asociaciones_ingredientes = vec![AsociacionIngrediente {
-                alias: "azucar".to_string(),
-                nombre: "Azúcar".to_string(),
-            }];
-        });
-        let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
-
-        // La comparación normaliza mayúsculas, tildes y espacios.
-        assert_eq!(reglas.nombre_asociado("AZÚCAR"), "Azúcar");
-        assert_eq!(reglas.nombre_asociado("  azucar  "), "Azúcar");
-
-        // Un ingrediente sin asociación se mantiene tal cual.
-        assert_eq!(reglas.nombre_asociado("Harina"), "Harina");
     }
 
     #[test]

@@ -9,15 +9,14 @@ let ingredientesPorArchivo = [];
 let tituloConsolidado = 'Consolidado de ingredientes';
 let diccionarioMaestro = [];
 
-// Ajustes GENERALES de la app (pestañas General, Interfaz, Exportación y
-// Sistema). No contienen ninguna regla de lectura de Excel: eso vive aparte en
+// Ajustes GENERALES de la app (pestañas "General" y "Exportación"). No
+// contienen ninguna regla de lectura de Excel: eso vive aparte en
 // `mapeoInsumos` y se persiste bajo la clave `mapeo_insumos` de config.json.
 function crearAjustesPorDefecto() {
     return {
         delayAutoprocesadoMs: 500,
         tema: 'claro',
         formatoNumeros: 'punto',
-        prefijoExportacion: 'Resumen_',
         incluirColoresExportacion: true,
         columnasExportacion: ['ingrediente', 'codigo', 'unidad', 'cantidad', 'total', 'comentarios'],
         ingredientesNoEncontrados: 'omitir'
@@ -25,34 +24,25 @@ function crearAjustesPorDefecto() {
 }
 
 // Configuración segregada del tratamiento de Excel (pestaña "Mapeo de
-// Insumos"): sinónimos de columnas, filtros, asociaciones y cabeceras.
+// Insumos"): sinónimos de columnas, filtros y cabeceras.
 // Los valores por defecto reproducen las reglas que antes estaban fijas.
 function crearMapeoPorDefecto() {
     return {
         sinonimosIngrediente: ['ingrediente', 'descripción', 'material'],
         sinonimosUnidad: ['u/m', 'um', 'unidad'],
-        sinonimosCantidad: ['cantidad'],
+        // Una sola lista de cantidad: incluye las abreviaturas que antes
+        // estaban repartidas entre prefijos y etiquetas parciales.
+        sinonimosCantidad: ['cantidad', 'cant.', 'cant', 'ctdad.', 'ctdad', 'peso', 'q'],
         sinonimosTotal: ['total', 'total cantidad'],
-        etiquetasCantidadParcial: ['a', 'b', 'c', 'tp', 'ta'],
-        prefijosCantidad: ['cantidad', 'ctdad.', 'ctdad', 'cant.', 'cant'],
-        palabrasMonetarias: [
-            'costo', 'coste', 'precio', 'valor', 'monto', 'importe', 'neto', 'bruto'
-        ],
         palabrasFilaIgnorada: ['material', 'descripción'],
-        asociacionesIngredientes: [],
         unidades: [
             { estandar: 'Litro', variantes: ['litro', 'litros', 'lt', 'lts', 'l'] },
             { estandar: 'Kilo', variantes: ['kilo', 'kilos', 'kg', 'kgs', 'kilogramo', 'kilogramos'] },
             { estandar: 'Gramo', variantes: ['gramo', 'gramos', 'g', 'gr', 'grs'] },
-            { estandar: 'Mililitro', variantes: ['mililitro', 'mililitros', 'ml', 'mls', 'cc'] },
-            { estandar: 'Unidad', variantes: ['unidad', 'unidades', 'un', 'und', 'u'] },
-            { estandar: 'Cucharada', variantes: ['cucharada', 'cucharadas', 'cda', 'cdas'] },
-            { estandar: 'Cucharadita', variantes: ['cucharadita', 'cucharaditas', 'cdta', 'cdtas'] },
-            { estandar: 'Taza', variantes: ['taza', 'tazas'] }
+            { estandar: 'Unidad', variantes: ['unidad', 'unidades', 'un', 'und', 'u'] }
         ],
         filasCabeceraIgnoradas: 0,
-        filasEscaneoCabecera: 15,
-        unidadPorDefecto: 'UNIDAD'
+        filasEscaneoCabecera: 15
     };
 }
 
@@ -60,6 +50,13 @@ let ajustesProcesamiento = crearAjustesPorDefecto();
 let mapeoInsumos = crearMapeoPorDefecto();
 
 let ajustesCargadosPromise = null;
+let vistaCompactaCargadaPromise = null;
+
+// Formato de números usado para pintar la tabla. Normalmente es el guardado en
+// `ajustesProcesamiento`, pero el modal lo sobreescribe mientras se previsualiza
+// un cambio (null = usar el persistido). Solo afecta a la UI: los cálculos y la
+// exportación siguen trabajando con números y punto decimal.
+let formatoNumerosVista = null;
 
 // --- AUTOPROCESADO: DEBOUNCE Y CONTROL DE CONCURRENCIA ---
 // Retrasa `fn` hasta que pasen `delay` ms sin nuevas llamadas. Si `delay` es
@@ -260,8 +257,10 @@ window.addEventListener('DOMContentLoaded', () => {
     const sectionList = document.getElementById('sectionList');
     const btnSaveGroup = document.getElementById('btnSaveGroup');
     const btnNewGroup = document.getElementById('btnNewGroup');
+    const btnImportarGruposExcel = document.getElementById('btnImportarGruposExcel');
     const btnAdjust = document.getElementById('btnAdjust');
     const btnAddExcel = document.getElementById('btnAddExcel');
+    const btnEliminarSeleccionados = document.getElementById('btnEliminarSeleccionados');
     const btnAddDiccionario = document.getElementById('btnAddDiccionario');
     const dictionaryList = document.getElementById('dictionaryList');
     const btnProcesarSeleccionadas = document.getElementById('btnProcesarSeleccionadas');
@@ -502,6 +501,21 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Elimina de la lista los archivos marcados con su casilla.
+    if (btnEliminarSeleccionados) {
+        btnEliminarSeleccionados.addEventListener('click', eliminarArchivosSeleccionados);
+    }
+
+    const fileList = document.getElementById('fileList');
+    if (fileList) {
+        // Delegación: la lista se repinta entera al agregar o quitar archivos.
+        fileList.addEventListener('change', (evento) => {
+            if (evento.target.closest('.chk-file, .chk-sheet')) {
+                actualizarBotonEliminarSeleccionados();
+            }
+        });
+    }
+
     // --- Diccionario maestro (se carga una sola vez y queda en memoria) ---
     if (btnAddDiccionario) {
         btnAddDiccionario.addEventListener('click', async () => {
@@ -649,6 +663,7 @@ window.addEventListener('DOMContentLoaded', () => {
             idSeleccionHojas++;
             procesarHojasDebounced.cancelar();
             desmarcarHojaDebounced.cancelar();
+            actualizarBotonEliminarSeleccionados();
         });
     }
 
@@ -725,27 +740,32 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    cargarArchivosRecientes();
-    cargarGruposGuardados();
-
-    // Vista compacta de la lista de archivos: se aplica al <ul id="fileList">
-    // y se persiste en config.json mediante un comando Rust.
-    const chkVistaCompacta = document.getElementById('chkVistaCompacta');
-    if (chkVistaCompacta) {
-        chkVistaCompacta.addEventListener('change', async () => {
-            aplicarVistaCompacta(chkVistaCompacta.checked);
-
-            try {
-                await invoke('guardar_vista_compacta', {
-                    activa: chkVistaCompacta.checked
-                });
-            } catch (error) {
-                console.error('No se pudo guardar la vista compacta:', error);
-            }
-        });
+    // --- Importar grupos desde un Excel (codigo / Asignatura / secciones / alumnos) ---
+    if (btnImportarGruposExcel) {
+        btnImportarGruposExcel.addEventListener('click', importarGruposDesdeExcel);
     }
 
-    inicializarVistaCompacta();
+    cargarArchivosRecientes();
+
+    // El control de Vista compacta vive ahora en Ajustes → General. Aquí solo
+    // se carga el valor persistido al arrancar; el modal espera esta promesa
+    // para mostrar el estado real en su checkbox.
+    vistaCompactaCargadaPromise = inicializarVistaCompacta();
+
+    // La lista de grupos necesita el tamaño de página persistido antes de
+    // pintarse, así que se carga después de leer esa configuración.
+    gruposVistaCargadaPromise = inicializarGruposVista().then(() => cargarGruposGuardados());
+
+    const btnGruposAnterior = document.getElementById('btnGruposAnterior');
+    if (btnGruposAnterior) {
+        btnGruposAnterior.addEventListener('click', () => irPaginaGrupos(-1));
+    }
+
+    const btnGruposSiguiente = document.getElementById('btnGruposSiguiente');
+    if (btnGruposSiguiente) {
+        btnGruposSiguiente.addEventListener('click', () => irPaginaGrupos(1));
+    }
+
     inicializarAutoProcesar();
 });
 
@@ -795,53 +815,191 @@ function renderizarSecciones(secciones, contenedor) {
     });
 }
 
+// --- VISTA COMPACTA Y PAGINACIÓN DE LA LISTA DE GRUPOS ---
+// Igual que en la lista de archivos, la clase `.modo-compacto` se aplica al
+// <ul id="savedList"> para sobrevivir a los repintados. El cache evita volver a
+// leer el disco cada vez que se cambia de página.
+const GRUPOS_POR_PAGINA_POR_DEFECTO = 10;
+const GRUPOS_POR_PAGINA_MAX = 500;
+const GRUPOS_POR_PAGINA_OPCIONES = [5, 10, 20, 50];
+
+// `...Guardado` es lo persistido; `...Activo` es lo que se ve ahora mismo (el
+// modal puede previsualizar un cambio sin guardarlo).
+let vistaCompactaGruposGuardada = false;
+let vistaCompactaGruposActiva = false;
+let gruposPorPaginaGuardado = GRUPOS_POR_PAGINA_POR_DEFECTO;
+let gruposPorPaginaActivo = GRUPOS_POR_PAGINA_POR_DEFECTO;
+
+// Última lista leída de disco y página visible (0-based).
+let gruposGuardadosCache = [];
+let paginaGruposActual = 0;
+let gruposVistaCargadaPromise = null;
+
+function normalizarGruposPorPagina(valor) {
+    const numero = Math.trunc(Number(valor));
+    if (!Number.isFinite(numero) || numero < 1) return GRUPOS_POR_PAGINA_POR_DEFECTO;
+    return Math.min(numero, GRUPOS_POR_PAGINA_MAX);
+}
+
+function aplicarVistaCompactaGrupos(activa) {
+    vistaCompactaGruposActiva = Boolean(activa);
+
+    const savedList = document.getElementById('savedList');
+    if (savedList) {
+        savedList.classList.toggle('modo-compacto', vistaCompactaGruposActiva);
+    }
+
+    // Mantiene el interruptor del modal sincronizado.
+    const chk = document.getElementById('ajusteVistaCompactaGrupos');
+    if (chk) {
+        chk.checked = vistaCompactaGruposActiva;
+        if (chk.getAttribute('role') === 'switch') {
+            chk.setAttribute('aria-checked', String(vistaCompactaGruposActiva));
+        }
+    }
+}
+
+function aplicarGruposPorPagina(cantidad) {
+    gruposPorPaginaActivo = normalizarGruposPorPagina(cantidad);
+
+    const totalPaginas = Math.max(
+        1,
+        Math.ceil(gruposGuardadosCache.length / gruposPorPaginaActivo)
+    );
+    paginaGruposActual = Math.min(paginaGruposActual, totalPaginas - 1);
+
+    const select = document.getElementById('ajusteGruposPorPagina');
+    if (select) select.value = String(gruposPorPaginaActivo);
+
+    renderizarGruposGuardados();
+}
+
+async function inicializarGruposVista() {
+    try {
+        const [compacta, porPagina] = await Promise.all([
+            invoke('obtener_vista_compacta_grupos'),
+            invoke('obtener_grupos_por_pagina')
+        ]);
+
+        vistaCompactaGruposGuardada = Boolean(compacta);
+        gruposPorPaginaGuardado = normalizarGruposPorPagina(porPagina);
+        gruposPorPaginaActivo = gruposPorPaginaGuardado;
+
+        aplicarVistaCompactaGrupos(vistaCompactaGruposGuardada);
+    } catch (error) {
+        console.error('No se pudo leer la configuración de la lista de grupos:', error);
+    }
+}
+
 async function cargarGruposGuardados() {
     const savedList = document.getElementById('savedList');
     if (!savedList) return;
 
     try {
-        const grupos = await invoke('obtener_grupos_guardados');
-        savedList.innerHTML = '';
+        gruposGuardadosCache = await invoke('obtener_grupos_guardados');
 
-        grupos.forEach((grupo, index) => {
-            const li = document.createElement('li');
-            li.innerHTML = `
-                <span class="saved-name">${grupo.nombre}</span>
-                <button class="btn-use-group" data-index="${index}" type="button">Usar</button>
-                <button class="btn-delete-saved" data-nombre="${grupo.nombre}" title="Eliminar grupo">
-                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                </button>
-            `;
-            savedList.appendChild(li);
-        });
+        // Una recarga (guardar, eliminar, importar) puede dejar la página actual
+        // fuera de rango.
+        const totalPaginas = Math.max(
+            1,
+            Math.ceil(gruposGuardadosCache.length / gruposPorPaginaActivo)
+        );
+        paginaGruposActual = Math.min(paginaGruposActual, totalPaginas - 1);
 
-        document.querySelectorAll('.btn-use-group').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const button = e.target.closest('.btn-use-group');
-                const index = parseInt(button.dataset.index);
-                usarGrupoGuardado(grupos[index]);
-            });
-        });
-
-        document.querySelectorAll('.btn-delete-saved').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const button = e.target.closest('.btn-delete-saved');
-                const nombre = button.dataset.nombre;
-                if (confirm(`¿Estás seguro de que quieres eliminar el grupo "${nombre}"?`)) {
-                    try {
-                        await invoke('eliminar_grupo', { nombreGrupo: nombre });
-                        quitarGrupoDeVinculaciones(nombre);
-                        await cargarGruposGuardados();
-                    } catch (error) {
-                        alert("Error al eliminar el grupo: " + error);
-                    }
-                }
-            });
-        });
-
+        renderizarGruposGuardados();
     } catch (error) {
         console.error("Error al cargar grupos guardados:", error);
     }
+}
+
+// Pinta solo la página actual a partir del cache. Separado de
+// `cargarGruposGuardados` para que cambiar de página no vuelva a leer el disco.
+function renderizarGruposGuardados() {
+    const savedList = document.getElementById('savedList');
+    if (!savedList) return;
+
+    savedList.innerHTML = '';
+
+    // `data-index` es el índice global: "Usar" funciona igual en cualquier página.
+    const inicio = paginaGruposActual * gruposPorPaginaActivo;
+    const visibles = gruposGuardadosCache.slice(inicio, inicio + gruposPorPaginaActivo);
+
+    visibles.forEach((grupo, offset) => {
+        const index = inicio + offset;
+        const li = document.createElement('li');
+        const nombreSeguro = escaparHtml(grupo.nombre);
+        // El `title` muestra el nombre completo cuando la vista compacta lo trunca.
+        li.innerHTML = `
+            <span class="saved-name" title="${nombreSeguro}">${nombreSeguro}</span>
+            <button class="btn-use-group" data-index="${index}" type="button">Usar</button>
+            <button class="btn-delete-saved" data-nombre="${nombreSeguro}" title="Eliminar grupo">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+        `;
+        savedList.appendChild(li);
+    });
+
+    savedList.querySelectorAll('.btn-use-group').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const button = e.target.closest('.btn-use-group');
+            const index = parseInt(button.dataset.index, 10);
+            const grupo = gruposGuardadosCache[index];
+            if (grupo) usarGrupoGuardado(grupo);
+        });
+    });
+
+    savedList.querySelectorAll('.btn-delete-saved').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const button = e.target.closest('.btn-delete-saved');
+            const nombre = button.dataset.nombre;
+            if (confirm(`¿Estás seguro de que quieres eliminar el grupo "${nombre}"?`)) {
+                try {
+                    await invoke('eliminar_grupo', { nombreGrupo: nombre });
+                    quitarGrupoDeVinculaciones(nombre);
+                    await cargarGruposGuardados();
+                } catch (error) {
+                    alert("Error al eliminar el grupo: " + error);
+                }
+            }
+        });
+    });
+
+    actualizarPaginacionGrupos();
+}
+
+function actualizarPaginacionGrupos() {
+    const contenedor = document.getElementById('savedPagination');
+    if (!contenedor) return;
+
+    const total = gruposGuardadosCache.length;
+
+    // Si todo cabe en una página, no hay nada que navegar.
+    if (total <= gruposPorPaginaActivo) {
+        contenedor.hidden = true;
+        return;
+    }
+
+    const totalPaginas = Math.max(1, Math.ceil(total / gruposPorPaginaActivo));
+    const info = document.getElementById('savedPaginationInfo');
+    const btnAnterior = document.getElementById('btnGruposAnterior');
+    const btnSiguiente = document.getElementById('btnGruposSiguiente');
+
+    contenedor.hidden = false;
+    if (info) info.textContent = `Página ${paginaGruposActual + 1} de ${totalPaginas}`;
+    if (btnAnterior) btnAnterior.disabled = paginaGruposActual <= 0;
+    if (btnSiguiente) btnSiguiente.disabled = paginaGruposActual >= totalPaginas - 1;
+}
+
+function irPaginaGrupos(delta) {
+    const totalPaginas = Math.max(
+        1,
+        Math.ceil(gruposGuardadosCache.length / gruposPorPaginaActivo)
+    );
+    const destino = paginaGruposActual + delta;
+    if (destino < 0 || destino >= totalPaginas) return;
+
+    paginaGruposActual = destino;
+    renderizarGruposGuardados();
 }
 
 function usarGrupoGuardado(grupo) {
@@ -858,22 +1016,368 @@ function usarGrupoGuardado(grupo) {
     if (sectionList) renderizarSecciones(seccionesNormalizadas, sectionList);
 }
 
+// --- IMPORTACIÓN DE GRUPOS DESDE EXCEL ---
+// El backend devuelve [{ nombre, codigo, asignatura, secciones: [{ tipo, alumnos }] }].
+// Aquí se convierten las secciones a la forma que usa la UI y se persiste cada
+// grupo con `guardar_grupo`, preguntando antes si el nombre ya existe.
+
+function escaparHtml(texto) {
+    return String(texto ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function claveNombreGrupo(nombre) {
+    return String(nombre ?? '').trim().toLowerCase();
+}
+
+// Reparte las proporciones igual que `auto_ajustar_proporciones` en Rust.
+function asignarIdsYProporciones(secciones) {
+    const alumnoMax = Math.max(
+        0,
+        ...secciones.map(seccion => Math.max(0, Number(seccion.alumnos) || 0))
+    );
+
+    return secciones.map((seccion, indice) => {
+        const alumnos = Math.max(0, Math.round(Number(seccion.alumnos) || 0));
+
+        return {
+            id: indice + 1,
+            nombre: seccion.nombre,
+            alumnos,
+            proporcion: alumnoMax > 0
+                ? Math.round((alumnos / alumnoMax) * 1000) / 10
+                : 0
+        };
+    });
+}
+
+// Convierte la respuesta de Rust en secciones con nombre D1..Dn / V1..Vn.
+function seccionesDesdeImportacion(lista) {
+    const contadores = { D: 0, V: 0 };
+    const secciones = [];
+
+    (Array.isArray(lista) ? lista : []).forEach(seccion => {
+        const tipo = String(seccion?.tipo ?? '').trim().toUpperCase().startsWith('V')
+            ? 'V'
+            : 'D';
+
+        contadores[tipo] += 1;
+        secciones.push({
+            nombre: `${tipo}${contadores[tipo]}`,
+            alumnos: Number(seccion?.alumnos) || 0
+        });
+    });
+
+    return asignarIdsYProporciones(secciones);
+}
+
+// Une las secciones actuales con las importadas y renumera D/V para que no
+// queden dos secciones con el mismo nombre tras la fusión.
+function fusionarSecciones(existentes, nuevas) {
+    const combinadas = [];
+
+    (Array.isArray(existentes) ? existentes : []).forEach(seccion => {
+        combinadas.push({
+            nombre: String(seccion?.nombre ?? '').trim() || 'Sección',
+            alumnos: Number(seccion?.alumnos) || 0
+        });
+    });
+
+    (Array.isArray(nuevas) ? nuevas : []).forEach(seccion => combinadas.push(seccion));
+
+    const contadores = { D: 0, V: 0 };
+    const renombradas = combinadas.map(seccion => {
+        const tipo = /^d/i.test(seccion.nombre)
+            ? 'D'
+            : (/^v/i.test(seccion.nombre) ? 'V' : null);
+
+        if (!tipo) return seccion;
+
+        contadores[tipo] += 1;
+        return { ...seccion, nombre: `${tipo}${contadores[tipo]}` };
+    });
+
+    return asignarIdsYProporciones(renombradas);
+}
+
+// Pregunta qué hacer con un grupo que ya está guardado.
+// Devuelve 'fusionar', 'reemplazar' o 'cancelar'.
+function preguntarConflictoGrupo(nombre, cantidadNuevas) {
+    return new Promise(resolve => {
+        let decidido = false;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'colors-modal-overlay';
+        overlay.id = 'modalConflictoGrupo';
+
+        const cerrar = (decision) => {
+            if (decidido) return;
+            decidido = true;
+            document.removeEventListener('keydown', alEscape);
+            overlay.remove();
+            resolve(decision);
+        };
+
+        const alEscape = (evento) => {
+            if (evento.key !== 'Escape') return;
+            evento.preventDefault();
+            cerrar('cancelar');
+        };
+
+        overlay.addEventListener('mousedown', evento => {
+            if (evento.target === overlay) cerrar('cancelar');
+        });
+
+        const modal = document.createElement('div');
+        modal.className = 'colors-modal import-conflict-modal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-labelledby', 'conflictoGrupoTitulo');
+
+        const header = document.createElement('div');
+        header.className = 'colors-modal-header';
+
+        const titulo = document.createElement('div');
+        titulo.className = 'colors-modal-title';
+        titulo.id = 'conflictoGrupoTitulo';
+        titulo.textContent = 'El grupo ya existe';
+
+        header.appendChild(titulo);
+
+        const body = document.createElement('div');
+        body.className = 'import-conflict-body';
+
+        const nombreFuerte = document.createElement('span');
+        nombreFuerte.className = 'import-conflict-name';
+        nombreFuerte.textContent = `"${nombre}"`;
+
+        const pregunta = document.createElement('p');
+        pregunta.append('Ya existe un grupo llamado ', nombreFuerte, '.');
+
+        const detalle = document.createElement('p');
+        detalle.className = 'import-conflict-hint';
+        detalle.textContent = `El Excel aporta ${cantidadNuevas} `
+            + `${cantidadNuevas === 1 ? 'sección' : 'secciones'}. `
+            + 'Fusionar las agrega a las actuales; reemplazar borra las que tenía el grupo.';
+
+        body.append(pregunta, detalle);
+
+        const footer = document.createElement('div');
+        footer.className = 'import-conflict-footer';
+
+        const btnCancelar = document.createElement('button');
+        btnCancelar.type = 'button';
+        btnCancelar.className = 'settings-cancel';
+        btnCancelar.textContent = 'Cancelar';
+        btnCancelar.addEventListener('click', () => cerrar('cancelar'));
+
+        const btnReemplazar = document.createElement('button');
+        btnReemplazar.type = 'button';
+        btnReemplazar.className = 'settings-danger';
+        btnReemplazar.textContent = 'Reemplazar';
+        btnReemplazar.addEventListener('click', () => cerrar('reemplazar'));
+
+        const btnFusionar = document.createElement('button');
+        btnFusionar.type = 'button';
+        btnFusionar.className = 'settings-save';
+        btnFusionar.textContent = 'Fusionar secciones';
+        btnFusionar.addEventListener('click', () => cerrar('fusionar'));
+
+        footer.append(btnCancelar, btnReemplazar, btnFusionar);
+        modal.append(header, body, footer);
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        document.addEventListener('keydown', alEscape);
+        btnFusionar.focus();
+    });
+}
+
+async function importarGruposDesdeExcel() {
+    const boton = document.getElementById('btnImportarGruposExcel');
+    if (boton?.disabled) return;
+
+    let ruta = '';
+
+    try {
+        const seleccion = await window.__TAURI__.dialog.open({
+            multiple: false,
+            filters: [{ name: 'Archivos Excel', extensions: ['xlsx', 'xls'] }]
+        });
+
+        ruta = Array.isArray(seleccion) ? seleccion[0] : seleccion;
+    } catch (error) {
+        console.error('No se pudo abrir el selector de archivos:', error);
+        return;
+    }
+
+    if (!ruta) return;
+
+    if (boton) boton.disabled = true;
+
+    try {
+        let gruposImportados = [];
+
+        try {
+            gruposImportados = await invoke('importar_grupos_excel', { ruta });
+        } catch (error) {
+            await window.__TAURI__.dialog.message(
+                'No se pudieron importar los grupos.\n\n' + String(error),
+                { title: 'Importar grupos', kind: 'error' }
+            );
+            return;
+        }
+
+        if (!Array.isArray(gruposImportados) || gruposImportados.length === 0) {
+            await window.__TAURI__.dialog.message(
+                'El archivo no contiene grupos para importar.',
+                { title: 'Importar grupos', kind: 'warning' }
+            );
+            return;
+        }
+
+        let guardados = [];
+
+        try {
+            guardados = await invoke('obtener_grupos_guardados');
+        } catch (error) {
+            console.error('No se pudieron leer los grupos existentes:', error);
+        }
+
+        const existentes = new Map();
+
+        (Array.isArray(guardados) ? guardados : []).forEach(grupo => {
+            const nombre = String(grupo?.nombre ?? '').trim();
+            if (!nombre) return;
+
+            existentes.set(claveNombreGrupo(nombre), {
+                nombre,
+                secciones: Array.isArray(grupo.secciones) ? grupo.secciones : []
+            });
+        });
+
+        const resumen = {
+            creados: 0,
+            fusionados: 0,
+            reemplazados: 0,
+            omitidos: 0,
+            fallidos: 0
+        };
+
+        for (const grupo of gruposImportados) {
+            const nombreImportado = String(grupo?.nombre ?? '').trim();
+            if (!nombreImportado) continue;
+
+            const clave = claveNombreGrupo(nombreImportado);
+            const existente = existentes.get(clave);
+            let secciones = seccionesDesdeImportacion(grupo.secciones);
+
+            if (secciones.length === 0) continue;
+
+            let nombreGuardar = nombreImportado;
+            let modo = 'crear';
+
+            if (existente) {
+                const decision = await preguntarConflictoGrupo(
+                    existente.nombre,
+                    secciones.length
+                );
+
+                if (decision === 'cancelar') {
+                    resumen.omitidos++;
+                    continue;
+                }
+
+                nombreGuardar = existente.nombre;
+                modo = decision;
+
+                if (decision === 'fusionar') {
+                    secciones = fusionarSecciones(existente.secciones, secciones);
+                }
+            }
+
+            try {
+                await invoke('guardar_grupo', {
+                    nombreGrupo: nombreGuardar,
+                    secciones
+                });
+
+                existentes.set(clave, { nombre: nombreGuardar, secciones });
+
+                if (modo === 'fusionar') resumen.fusionados++;
+                else if (modo === 'reemplazar') resumen.reemplazados++;
+                else resumen.creados++;
+            } catch (error) {
+                console.error(`No se pudo guardar el grupo "${nombreGuardar}":`, error);
+                resumen.fallidos++;
+            }
+        }
+
+        await cargarGruposGuardados();
+
+        const partes = [];
+        if (resumen.creados) {
+            partes.push(`${resumen.creados} ${resumen.creados === 1 ? 'grupo creado' : 'grupos creados'}`);
+        }
+        if (resumen.fusionados) {
+            partes.push(`${resumen.fusionados} ${resumen.fusionados === 1 ? 'grupo fusionado' : 'grupos fusionados'}`);
+        }
+        if (resumen.reemplazados) {
+            partes.push(`${resumen.reemplazados} ${resumen.reemplazados === 1 ? 'grupo reemplazado' : 'grupos reemplazados'}`);
+        }
+        if (resumen.omitidos) {
+            partes.push(`${resumen.omitidos} ${resumen.omitidos === 1 ? 'grupo omitido' : 'grupos omitidos'}`);
+        }
+        if (resumen.fallidos) {
+            partes.push(`${resumen.fallidos} ${resumen.fallidos === 1 ? 'grupo con error' : 'grupos con error'}`);
+        }
+
+        await window.__TAURI__.dialog.message(
+            'Importación completada.\n\n'
+                + (partes.length > 0 ? partes.join('\n') : 'No se modificó ningún grupo.'),
+            {
+                title: 'Importar grupos',
+                kind: resumen.fallidos > 0 ? 'warning' : 'info'
+            }
+        );
+    } finally {
+        if (boton) boton.disabled = false;
+    }
+}
+
 // --- VISTA COMPACTA DE LA LISTA DE ARCHIVOS ---
 // La clase se aplica al <ul id="fileList"> y no a cada ítem: la lista se
 // repinta entera con `innerHTML = ''` cada vez que cambian los archivos, pero
 // la clase del contenedor sobrevive a esos repintados.
-function aplicarVistaCompacta(activa) {
-    const fileList = document.getElementById('fileList');
-    if (fileList) fileList.classList.toggle('modo-compacto', Boolean(activa));
+// `vistaCompactaGuardada` es lo persistido; `vistaCompactaActiva` es lo que se
+// ve ahora mismo (el modal puede previsualizar un cambio sin guardarlo).
+let vistaCompactaGuardada = false;
+let vistaCompactaActiva = false;
 
-    // Mantiene el checkbox sincronizado cuando el estado viene del store.
-    const chk = document.getElementById('chkVistaCompacta');
-    if (chk) chk.checked = Boolean(activa);
+function aplicarVistaCompacta(activa) {
+    vistaCompactaActiva = Boolean(activa);
+
+    const fileList = document.getElementById('fileList');
+    if (fileList) fileList.classList.toggle('modo-compacto', vistaCompactaActiva);
+
+    // Mantiene el checkbox del modal sincronizado.
+    const chk = document.getElementById('ajusteVistaCompacta');
+    if (chk) {
+        chk.checked = vistaCompactaActiva;
+        if (chk.getAttribute('role') === 'switch') {
+            chk.setAttribute('aria-checked', String(vistaCompactaActiva));
+        }
+    }
 }
 
 async function inicializarVistaCompacta() {
     try {
-        const activa = await invoke('obtener_vista_compacta');
+        const activa = Boolean(await invoke('obtener_vista_compacta'));
+        vistaCompactaGuardada = activa;
         aplicarVistaCompacta(activa);
     } catch (error) {
         console.error('No se pudo leer la vista compacta guardada:', error);
@@ -887,16 +1391,8 @@ async function inicializarVistaCompacta() {
 const AJUSTES_POR_DEFECTO = crearAjustesPorDefecto();
 const MAPEO_POR_DEFECTO = crearMapeoPorDefecto();
 
-// Opciones de los selects. `valor` es lo que se guarda en config.json y
-// `texto` lo que ve el usuario.
-const UNIDADES_AJUSTES = [
-    { valor: 'UNIDAD', texto: 'UNIDAD' },
-    { valor: 'KILO', texto: 'KILO' },
-    { valor: 'LITRO', texto: 'LITRO' },
-    { valor: 'GRAMO', texto: 'GRAMO' },
-    { valor: 'MILILITRO', texto: 'MILILITRO' }
-];
-
+// Valores estables (`valor`) y etiquetas visibles (`texto`) de los ajustes
+// con opciones fijas. El tema se muestra en el modal como interruptor.
 const TEMAS_AJUSTES = [
     { valor: 'claro', texto: 'Claro' },
     { valor: 'oscuro', texto: 'Oscuro' }
@@ -1009,10 +1505,6 @@ function normalizarAjustes(valores) {
             FORMATOS_NUMEROS_AJUSTES,
             AJUSTES_POR_DEFECTO.formatoNumeros
         ),
-        prefijoExportacion: fuente.prefijoExportacion === undefined
-            || fuente.prefijoExportacion === null
-            ? AJUSTES_POR_DEFECTO.prefijoExportacion
-            : String(fuente.prefijoExportacion).trim(),
         incluirColoresExportacion: booleano(
             fuente.incluirColoresExportacion,
             AJUSTES_POR_DEFECTO.incluirColoresExportacion
@@ -1026,31 +1518,6 @@ function normalizarAjustes(valores) {
             AJUSTES_POR_DEFECTO.ingredientesNoEncontrados
         )
     };
-}
-
-// Normaliza las asociaciones alias → nombre canónico: sin vacíos ni alias
-// duplicados (sin distinguir mayúsculas).
-function asociacionesIngredientes(valor) {
-    const origen = Array.isArray(valor) ? valor : [];
-    const vistos = new Set();
-    const lista = [];
-
-    origen.forEach(item => {
-        if (!item || typeof item !== 'object') return;
-
-        const alias = normalizarValorLista(item.alias);
-        const nombre = normalizarValorLista(item.nombre);
-
-        if (!alias || !nombre) return;
-
-        const clave = alias.toLowerCase();
-        if (vistos.has(clave)) return;
-
-        vistos.add(clave);
-        lista.push({ alias, nombre });
-    });
-
-    return lista;
 }
 
 // Normaliza la tabla de equivalencias de unidades: una forma estándar por
@@ -1108,8 +1575,7 @@ function normalizarMapeoInsumos(valores) {
 
     // Mapeo guardado por una versión anterior a las listas dinámicas: las
     // listas nuevas pueden faltar y las viejas pueden estar vacías.
-    const esConfigHeredada =
-        !('sinonimosTotal' in fuente) && !('etiquetasCantidadParcial' in fuente);
+    const esConfigHeredada = !('sinonimosTotal' in fuente);
 
     // En un mapeo heredado, una lista vacía se completa con el valor
     // recomendado; en uno nuevo, una lista vacía es una elección del usuario.
@@ -1144,24 +1610,9 @@ function normalizarMapeoInsumos(valores) {
             fuente.sinonimosTotal,
             MAPEO_POR_DEFECTO.sinonimosTotal
         ),
-        etiquetasCantidadParcial: listaConRecomendados(
-            fuente.etiquetasCantidadParcial,
-            MAPEO_POR_DEFECTO.etiquetasCantidadParcial
-        ),
-        prefijosCantidad: listaConRecomendados(
-            fuente.prefijosCantidad,
-            MAPEO_POR_DEFECTO.prefijosCantidad
-        ),
-        palabrasMonetarias: listaConRecomendados(
-            fuente.palabrasMonetarias,
-            MAPEO_POR_DEFECTO.palabrasMonetarias
-        ),
         palabrasFilaIgnorada: listaConRecomendados(
             fuente.palabrasFilaIgnorada,
             MAPEO_POR_DEFECTO.palabrasFilaIgnorada
-        ),
-        asociacionesIngredientes: asociacionesIngredientes(
-            fuente.asociacionesIngredientes
         ),
         unidades: sinUnidades
             ? normalizarUnidadesMapeo(MAPEO_POR_DEFECTO.unidades)
@@ -1173,11 +1624,6 @@ function normalizarMapeoInsumos(valores) {
         filasEscaneoCabecera: enteroNoNegativo(
             fuente.filasEscaneoCabecera,
             MAPEO_POR_DEFECTO.filasEscaneoCabecera
-        ),
-        unidadPorDefecto: opcionPermitida(
-            fuente.unidadPorDefecto,
-            UNIDADES_AJUSTES,
-            MAPEO_POR_DEFECTO.unidadPorDefecto
         )
     };
 }
@@ -1196,15 +1642,24 @@ function faltantesMapeoInsumos(mapeo) {
     if (
         !mapeo.sinonimosCantidad.length
         && !mapeo.sinonimosTotal.length
-        && !mapeo.etiquetasCantidadParcial.length
     ) {
-        faltantes.push('Alguna regla de cantidad (sinónimos, total o etiquetas parciales)');
+        faltantes.push('Sinónimos de cantidad o de total');
     }
     if (mapeo.filasEscaneoCabecera < 1) {
         faltantes.push('Filas a examinar buscando la cabecera (mínimo 1)');
     }
 
     return faltantes;
+}
+
+// Aplica el tema visual a toda la app. La clase vive en <body> y el CSS define
+// las variables de color de cada modo.
+function aplicarTema(tema) {
+    const oscuro = tema === 'oscuro';
+
+    document.body.classList.toggle('modo-oscuro', oscuro);
+    document.body.classList.toggle('modo-claro', !oscuro);
+    document.documentElement.style.colorScheme = oscuro ? 'dark' : 'light';
 }
 
 async function cargarAjustesProcesamiento() {
@@ -1233,6 +1688,10 @@ async function cargarAjustesProcesamiento() {
         mapeoInsumos = normalizarMapeoInsumos(null);
     }
 
+    // El tema guardado se aplica en cuanto se conoce, sin esperar al modal.
+    aplicarTema(ajustesProcesamiento.tema);
+    reformatearCantidadesTabla();
+
     return { ajustes: ajustesProcesamiento, mapeo: mapeoInsumos };
 }
 
@@ -1241,6 +1700,17 @@ function cerrarAjustesProcesamiento() {
     if (overlay) overlay.remove();
 
     document.removeEventListener('keydown', cerrarAjustesPorEscape);
+
+    // Si se previsualizó otro tema, formato o vista compacta y no se guardó,
+    // la app vuelve al estado persistido.
+    if (overlay) {
+        formatoNumerosVista = null;
+        aplicarTema(ajustesProcesamiento.tema);
+        reformatearCantidadesTabla();
+        aplicarVistaCompacta(vistaCompactaGuardada);
+        aplicarVistaCompactaGrupos(vistaCompactaGruposGuardada);
+        aplicarGruposPorPagina(gruposPorPaginaGuardado);
+    }
 }
 
 function cerrarAjustesPorEscape(evento) {
@@ -1297,8 +1767,9 @@ function seccionAjustes(titulo, ...contenido) {
 }
 
 // Select etiquetado. Si el valor guardado no está entre las opciones, se
-// selecciona la primera para no dejar el control vacío.
-function crearSelectAjuste({ id, etiqueta, valor, opciones, pista }) {
+// selecciona la primera para no dejar el control vacío. `onChange` permite
+// previsualizar el cambio sin guardar (tema, formato de números).
+function crearSelectAjuste({ id, etiqueta, valor, opciones, pista, onChange }) {
     const campo = document.createElement('label');
     campo.className = 'settings-field';
     campo.htmlFor = id;
@@ -1322,6 +1793,10 @@ function crearSelectAjuste({ id, etiqueta, valor, opciones, pista }) {
     const disponible = opciones.some(opcion => opcion.valor === valor);
     select.value = disponible ? valor : (opciones[0]?.valor || '');
 
+    if (typeof onChange === 'function') {
+        select.addEventListener('change', () => onChange(select.value, select));
+    }
+
     campo.appendChild(select);
 
     if (pista) {
@@ -1334,8 +1809,9 @@ function crearSelectAjuste({ id, etiqueta, valor, opciones, pista }) {
     return campo;
 }
 
-// Checkbox etiquetado con toda la fila clickeable.
-function crearCheckboxAjuste({ id, etiqueta, marcado, pista }) {
+// Checkbox etiquetado con toda la fila clickeable. `onChange` permite
+// previsualizar el cambio sin guardar (vista compacta).
+function crearCheckboxAjuste({ id, etiqueta, marcado, pista, onChange }) {
     const campo = document.createElement('label');
     campo.className = 'settings-check';
     campo.htmlFor = id;
@@ -1344,6 +1820,10 @@ function crearCheckboxAjuste({ id, etiqueta, marcado, pista }) {
     input.type = 'checkbox';
     input.id = id;
     input.checked = Boolean(marcado);
+
+    if (typeof onChange === 'function') {
+        input.addEventListener('change', () => onChange(input.checked, input));
+    }
 
     const texto = document.createElement('span');
     texto.className = 'settings-check-label';
@@ -1361,8 +1841,59 @@ function crearCheckboxAjuste({ id, etiqueta, marcado, pista }) {
     return campo;
 }
 
+// Interruptor (toggle switch) con título arriba, control + texto en medio y
+// ayuda abajo. `onChange` permite previsualizar el cambio sin guardar.
+function crearToggleAjuste({ id, etiqueta, marcado, texto, pista, onChange }) {
+    const campo = document.createElement('div');
+    campo.className = 'settings-toggle-field';
+
+    const titulo = document.createElement('span');
+    titulo.className = 'settings-label';
+    titulo.textContent = etiqueta;
+
+    const control = document.createElement('label');
+    control.className = 'settings-toggle';
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.id = id;
+    input.setAttribute('role', 'switch');
+    input.setAttribute('aria-label', etiqueta);
+    input.checked = Boolean(marcado);
+    input.setAttribute('aria-checked', String(input.checked));
+
+    const track = document.createElement('span');
+    track.className = 'settings-toggle-track';
+    track.setAttribute('aria-hidden', 'true');
+
+    const thumb = document.createElement('span');
+    thumb.className = 'settings-toggle-thumb';
+    track.appendChild(thumb);
+
+    const textoControl = document.createElement('span');
+    textoControl.className = 'settings-toggle-text';
+    textoControl.textContent = texto;
+
+    input.addEventListener('change', () => {
+        input.setAttribute('aria-checked', String(input.checked));
+        if (typeof onChange === 'function') onChange(input.checked, input);
+    });
+
+    control.append(input, track, textoControl);
+    campo.append(titulo, control);
+
+    if (pista) {
+        const ayuda = document.createElement('span');
+        ayuda.className = 'settings-hint';
+        ayuda.textContent = pista;
+        campo.appendChild(ayuda);
+    }
+
+    return campo;
+}
+
 // --- EDITORES DE LISTAS DEL MODAL DE AJUSTES ---
-// Cada lista (sinónimos, etiquetas, prefijos…) se edita con chips: agregar,
+// Cada lista (sinónimos, filtros…) se edita con filas verticales: agregar,
 // editar en línea y eliminar. El estado vive en memoria y se refleja en un
 // input oculto con JSON, que es lo que lee `leerAjustesDesdeModal`.
 const editoresListaAjustes = new Map();
@@ -1371,12 +1902,12 @@ function normalizarValorLista(valor) {
     return String(valor ?? '').trim().replace(/\s+/g, ' ');
 }
 
-function crearBotonLista(etiqueta, clase, onClick) {
+function crearBotonLista(etiqueta, clase, onClick, titulo = etiqueta) {
     const boton = document.createElement('button');
     boton.type = 'button';
     boton.className = clase;
-    boton.title = etiqueta;
-    boton.setAttribute('aria-label', etiqueta);
+    boton.title = titulo;
+    boton.setAttribute('aria-label', titulo);
     boton.textContent = etiqueta;
     boton.addEventListener('click', onClick);
     return boton;
@@ -1439,7 +1970,12 @@ function crearEditorListaAjuste({
     input.placeholder = placeholder;
     input.setAttribute('aria-label', `Nuevo valor para ${etiqueta}`);
 
-    const btnAgregar = crearBotonLista('Agregar', 'settings-list-add-btn', () => agregar());
+    const btnAgregar = crearBotonLista(
+        '+ Agregar',
+        'settings-list-add-btn',
+        () => agregar(),
+        'Agregar valor'
+    );
     filaAgregar.append(input, btnAgregar);
 
     let lista = listaSinonimos(valores);
@@ -1464,7 +2000,7 @@ function crearEditorListaAjuste({
         }
 
         if (limpio.includes(',')) {
-            mostrarError('Cada valor va en su propio chip: no uses comas.');
+            mostrarError('Cada valor va en su propia fila: no uses comas.');
             input.focus();
             return;
         }
@@ -1517,7 +2053,7 @@ function crearEditorListaAjuste({
                     }
 
                     if (limpio.includes(',')) {
-                        mostrarError('Cada valor va en su propio chip: no uses comas.');
+                        mostrarError('Cada valor va en su propia fila: no uses comas.');
                         inputEdicion.focus();
                         return;
                     }
@@ -1548,7 +2084,7 @@ function crearEditorListaAjuste({
 
                 inputEdicion.addEventListener('keydown', (evento) => {
                     // El modal guarda con Enter; aquí se intercepta para
-                    // confirmar solo la edición del chip.
+                    // confirmar solo la edición del valor.
                     if (evento.key === 'Enter') {
                         evento.preventDefault();
                         evento.stopPropagation();
@@ -1584,12 +2120,17 @@ function crearEditorListaAjuste({
                     mostrarError('');
                     render();
                 }),
-                crearBotonLista('Eliminar', 'settings-list-btn settings-list-btn-danger', () => {
-                    lista.splice(indice, 1);
-                    indiceEnEdicion = null;
-                    mostrarError('');
-                    render();
-                })
+                crearBotonLista(
+                    '×',
+                    'settings-list-btn settings-list-btn-x settings-list-btn-danger',
+                    () => {
+                        lista.splice(indice, 1);
+                        indiceEnEdicion = null;
+                        mostrarError('');
+                        render();
+                    },
+                    `Eliminar "${valor}"`
+                )
             );
 
             items.appendChild(fila);
@@ -1643,264 +2184,9 @@ function crearEditorListaAjuste({
     return campo;
 }
 
-// --- EDITOR DE ASOCIACIONES DE INGREDIENTES ---
-// Pares "alias → nombre canónico" de la pestaña "Mapeo de Insumos".
-const editoresAsociacionesAjustes = new Map();
-
-function crearEditorAsociacionesAjuste({ id, etiqueta, valores = [], pista = '' }) {
-    const campo = document.createElement('div');
-    campo.className = 'settings-field settings-list-field';
-
-    const cabecera = document.createElement('div');
-    cabecera.className = 'settings-label-row';
-
-    const label = document.createElement('span');
-    label.className = 'settings-label';
-    label.textContent = etiqueta;
-    cabecera.appendChild(label);
-
-    // Fuente de verdad para `leerMapeoDesdeModal`.
-    const oculto = document.createElement('input');
-    oculto.type = 'hidden';
-    oculto.id = id;
-
-    const items = document.createElement('div');
-    items.className = 'settings-map-list';
-
-    const error = document.createElement('span');
-    error.className = 'settings-list-error';
-    error.hidden = true;
-
-    const filaAgregar = document.createElement('div');
-    filaAgregar.className = 'settings-map-add';
-
-    const inputAlias = document.createElement('input');
-    inputAlias.type = 'text';
-    inputAlias.className = 'settings-input';
-    inputAlias.placeholder = 'Alias en el Excel (ej. azucar)';
-    inputAlias.setAttribute('aria-label', 'Alias del ingrediente');
-
-    const inputNombre = document.createElement('input');
-    inputNombre.type = 'text';
-    inputNombre.className = 'settings-input';
-    inputNombre.placeholder = 'Nombre canónico (ej. Azúcar)';
-    inputNombre.setAttribute('aria-label', 'Nombre canónico del ingrediente');
-
-    const btnAgregar = crearBotonLista('Agregar', 'settings-list-add-btn', () => agregar());
-    filaAgregar.append(inputAlias, inputNombre, btnAgregar);
-
-    let lista = asociacionesIngredientes(valores);
-    let indiceEnEdicion = null;
-
-    const sincronizar = () => {
-        oculto.value = JSON.stringify(lista);
-    };
-
-    const mostrarError = (texto) => {
-        error.textContent = texto;
-        error.hidden = !texto;
-    };
-
-    const crearInput = (valor, placeholder, ariaLabel) => {
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'settings-input settings-map-input';
-        input.value = valor;
-        input.placeholder = placeholder;
-        input.setAttribute('aria-label', ariaLabel);
-        return input;
-    };
-
-    const agregar = () => {
-        const alias = normalizarValorLista(inputAlias.value);
-        const nombre = normalizarValorLista(inputNombre.value);
-
-        if (!alias || !nombre) {
-            mostrarError('Completa el alias y el nombre canónico.');
-            (alias ? inputNombre : inputAlias).focus();
-            return;
-        }
-
-        const duplicado = lista.some(
-            asociacion => asociacion.alias.toLowerCase() === alias.toLowerCase()
-        );
-        if (duplicado) {
-            mostrarError('Ese alias ya tiene una asociación.');
-            inputAlias.focus();
-            return;
-        }
-
-        lista.push({ alias, nombre });
-        inputAlias.value = '';
-        inputNombre.value = '';
-        mostrarError('');
-        indiceEnEdicion = null;
-        render();
-        inputAlias.focus();
-    };
-
-    const render = () => {
-        items.innerHTML = '';
-
-        if (lista.length === 0) {
-            const vacio = document.createElement('span');
-            vacio.className = 'settings-list-empty';
-            vacio.textContent = 'Sin asociaciones: se usa el nombre tal como viene del Excel.';
-            items.appendChild(vacio);
-        }
-
-        lista.forEach((asociacion, indice) => {
-            const fila = document.createElement('div');
-            fila.className = 'settings-map-item';
-
-            if (indiceEnEdicion === indice) {
-                const inputAliasEdicion = crearInput(
-                    asociacion.alias,
-                    'Alias en el Excel',
-                    'Editar alias del ingrediente'
-                );
-                const inputNombreEdicion = crearInput(
-                    asociacion.nombre,
-                    'Nombre canónico',
-                    'Editar nombre canónico del ingrediente'
-                );
-
-                const confirmar = () => {
-                    const alias = normalizarValorLista(inputAliasEdicion.value);
-                    const nombre = normalizarValorLista(inputNombreEdicion.value);
-
-                    if (!alias || !nombre) {
-                        mostrarError('Completa el alias y el nombre canónico.');
-                        (alias ? inputNombreEdicion : inputAliasEdicion).focus();
-                        return;
-                    }
-
-                    const duplicado = lista.some(
-                        (otra, otroIndice) =>
-                            otroIndice !== indice
-                            && otra.alias.toLowerCase() === alias.toLowerCase()
-                    );
-                    if (duplicado) {
-                        mostrarError('Ese alias ya tiene una asociación.');
-                        inputAliasEdicion.focus();
-                        return;
-                    }
-
-                    lista[indice] = { alias, nombre };
-                    indiceEnEdicion = null;
-                    mostrarError('');
-                    render();
-                };
-
-                const cancelar = () => {
-                    indiceEnEdicion = null;
-                    mostrarError('');
-                    render();
-                };
-
-                [inputAliasEdicion, inputNombreEdicion].forEach(input => {
-                    input.addEventListener('keydown', (evento) => {
-                        if (evento.key === 'Enter') {
-                            evento.preventDefault();
-                            evento.stopPropagation();
-                            confirmar();
-                        } else if (evento.key === 'Escape') {
-                            evento.preventDefault();
-                            evento.stopPropagation();
-                            cancelar();
-                        }
-                    });
-                });
-
-                fila.append(
-                    inputAliasEdicion,
-                    inputNombreEdicion,
-                    crearBotonLista('Guardar', 'settings-list-btn settings-list-btn-ok', confirmar),
-                    crearBotonLista('Cancelar', 'settings-list-btn', cancelar)
-                );
-
-                items.appendChild(fila);
-                queueMicrotask(() => inputAliasEdicion.focus());
-                return;
-            }
-
-            const alias = document.createElement('span');
-            alias.className = 'settings-map-alias';
-            alias.textContent = asociacion.alias;
-            alias.title = asociacion.alias;
-
-            const flecha = document.createElement('span');
-            flecha.className = 'settings-map-arrow';
-            flecha.textContent = '→';
-            flecha.setAttribute('aria-hidden', 'true');
-
-            const nombre = document.createElement('span');
-            nombre.className = 'settings-map-name';
-            nombre.textContent = asociacion.nombre;
-            nombre.title = asociacion.nombre;
-
-            fila.append(
-                alias,
-                flecha,
-                nombre,
-                crearBotonLista('Editar', 'settings-list-btn', () => {
-                    indiceEnEdicion = indice;
-                    mostrarError('');
-                    render();
-                }),
-                crearBotonLista('Eliminar', 'settings-list-btn settings-list-btn-danger', () => {
-                    lista.splice(indice, 1);
-                    indiceEnEdicion = null;
-                    mostrarError('');
-                    render();
-                })
-            );
-
-            items.appendChild(fila);
-        });
-
-        sincronizar();
-    };
-
-    inputAlias.addEventListener('keydown', (evento) => {
-        if (evento.key !== 'Enter') return;
-        evento.preventDefault();
-        evento.stopPropagation();
-        agregar();
-    });
-
-    inputNombre.addEventListener('keydown', (evento) => {
-        if (evento.key !== 'Enter') return;
-        evento.preventDefault();
-        evento.stopPropagation();
-        agregar();
-    });
-
-    campo.append(cabecera, oculto, items, filaAgregar, error);
-
-    if (pista) {
-        const ayuda = document.createElement('span');
-        ayuda.className = 'settings-hint';
-        ayuda.textContent = pista;
-        campo.appendChild(ayuda);
-    }
-
-    editoresAsociacionesAjustes.set(id, {
-        establecer: (nuevos) => {
-            lista = asociacionesIngredientes(nuevos);
-            indiceEnEdicion = null;
-            mostrarError('');
-            render();
-        }
-    });
-
-    render();
-    return campo;
-}
-
 // --- TABLA DE PARES CONCEPTO → SINÓNIMOS ---
 // Cada fila muestra a la izquierda el concepto base y a la derecha sus
-// sinónimos como chips: la lista crece en vertical y no se desborda.
+// sinónimos en una lista vertical con botón × para quitar cada uno.
 function crearTablaParesAjustes(titulo, filas) {
     const seccion = document.createElement('div');
     seccion.className = 'settings-section';
@@ -2402,19 +2688,6 @@ function valorListaDesdeModal(id) {
     }
 }
 
-function valorAsociacionesDesdeModal(id) {
-    const input = document.getElementById(id);
-    if (!input) return [];
-
-    try {
-        const valor = JSON.parse(input.value);
-        return Array.isArray(valor) ? valor : [];
-    } catch (error) {
-        console.error(`Asociaciones de ajustes ilegibles (${id}):`, error);
-        return [];
-    }
-}
-
 function valorUnidadesDesdeModal(id) {
     const input = document.getElementById(id);
     if (!input) return [];
@@ -2428,8 +2701,8 @@ function valorUnidadesDesdeModal(id) {
     }
 }
 
-// Lee los controles generales del modal (General, Interfaz, Exportación y
-// Sistema) y los normaliza antes de persistirlos.
+// Lee los controles generales del modal (General y Exportación) y los
+// normaliza antes de persistirlos.
 function leerAjustesDesdeModal() {
     const columnas = {};
 
@@ -2440,9 +2713,8 @@ function leerAjustesDesdeModal() {
 
     return normalizarAjustes({
         delayAutoprocesadoMs: document.getElementById('ajusteDelayMs')?.value,
-        tema: document.getElementById('ajusteTema')?.value,
+        tema: document.getElementById('ajusteTema')?.checked ? 'oscuro' : 'claro',
         formatoNumeros: document.getElementById('ajusteFormatoNumeros')?.value,
-        prefijoExportacion: document.getElementById('ajustePrefijoExportacion')?.value,
         incluirColoresExportacion: document.getElementById('ajusteIncluirColores')?.checked,
         columnasExportacion: COLUMNAS_AJUSTES_EXPORTACION
             .filter(columna => columnas[columna.id])
@@ -2458,15 +2730,10 @@ function leerMapeoDesdeModal() {
         sinonimosUnidad: valorListaDesdeModal('mapeoSinonimosUnidad'),
         sinonimosCantidad: valorListaDesdeModal('mapeoSinonimosCantidad'),
         sinonimosTotal: valorListaDesdeModal('mapeoSinonimosTotal'),
-        etiquetasCantidadParcial: valorListaDesdeModal('mapeoEtiquetasCantidadParcial'),
-        prefijosCantidad: valorListaDesdeModal('mapeoPrefijosCantidad'),
-        palabrasMonetarias: valorListaDesdeModal('mapeoPalabrasMonetarias'),
         palabrasFilaIgnorada: valorListaDesdeModal('mapeoPalabrasFilaIgnorada'),
-        asociacionesIngredientes: valorAsociacionesDesdeModal('mapeoAsociacionesIngredientes'),
         unidades: valorUnidadesDesdeModal('mapeoUnidades'),
         filasCabeceraIgnoradas: document.getElementById('mapeoFilasCabecera')?.value,
-        filasEscaneoCabecera: document.getElementById('mapeoFilasEscaneo')?.value,
-        unidadPorDefecto: document.getElementById('mapeoUnidadPorDefecto')?.value
+        filasEscaneoCabecera: document.getElementById('mapeoFilasEscaneo')?.value
     });
 }
 
@@ -2479,13 +2746,20 @@ function volcarAjustesEnModal() {
 
     const asignarCheck = (id, valor) => {
         const control = document.getElementById(id);
-        if (control) control.checked = Boolean(valor);
+        if (!control) return;
+
+        control.checked = Boolean(valor);
+        if (control.getAttribute('role') === 'switch') {
+            control.setAttribute('aria-checked', String(Boolean(valor)));
+        }
     };
 
     asignarValor('ajusteDelayMs', String(ajustesProcesamiento.delayAutoprocesadoMs));
-    asignarValor('ajusteTema', ajustesProcesamiento.tema);
+    asignarCheck('ajusteTema', ajustesProcesamiento.tema === 'oscuro');
     asignarValor('ajusteFormatoNumeros', ajustesProcesamiento.formatoNumeros);
-    asignarValor('ajustePrefijoExportacion', ajustesProcesamiento.prefijoExportacion);
+    asignarCheck('ajusteVistaCompacta', vistaCompactaGuardada);
+    asignarCheck('ajusteVistaCompactaGrupos', vistaCompactaGruposGuardada);
+    asignarValor('ajusteGruposPorPagina', String(gruposPorPaginaGuardado));
     asignarCheck('ajusteIncluirColores', ajustesProcesamiento.incluirColoresExportacion);
     asignarValor(
         'ajusteIngredientesNoEncontrados',
@@ -2513,12 +2787,6 @@ function volcarMapeoEnModal() {
         else asignarValor(id, JSON.stringify(valores));
     };
 
-    const asignarAsociaciones = (id, valores) => {
-        const editor = editoresAsociacionesAjustes.get(id);
-        if (editor) editor.establecer(valores);
-        else asignarValor(id, JSON.stringify(valores));
-    };
-
     const asignarUnidades = (id, valores) => {
         const editor = editoresUnidadesAjustes.get(id);
         if (editor) editor.establecer(valores);
@@ -2529,15 +2797,10 @@ function volcarMapeoEnModal() {
     asignarLista('mapeoSinonimosUnidad', mapeoInsumos.sinonimosUnidad);
     asignarLista('mapeoSinonimosCantidad', mapeoInsumos.sinonimosCantidad);
     asignarLista('mapeoSinonimosTotal', mapeoInsumos.sinonimosTotal);
-    asignarLista('mapeoEtiquetasCantidadParcial', mapeoInsumos.etiquetasCantidadParcial);
-    asignarLista('mapeoPrefijosCantidad', mapeoInsumos.prefijosCantidad);
-    asignarLista('mapeoPalabrasMonetarias', mapeoInsumos.palabrasMonetarias);
     asignarLista('mapeoPalabrasFilaIgnorada', mapeoInsumos.palabrasFilaIgnorada);
-    asignarAsociaciones('mapeoAsociacionesIngredientes', mapeoInsumos.asociacionesIngredientes);
     asignarUnidades('mapeoUnidades', mapeoInsumos.unidades);
     asignarValor('mapeoFilasCabecera', String(mapeoInsumos.filasCabeceraIgnoradas));
     asignarValor('mapeoFilasEscaneo', String(mapeoInsumos.filasEscaneoCabecera));
-    asignarValor('mapeoUnidadPorDefecto', mapeoInsumos.unidadPorDefecto);
 }
 
 // Barra de pestañas + paneles. Se ocultan por clase porque el overlay usa
@@ -2646,13 +2909,27 @@ async function restablecerAjustesDesdeModal() {
     try {
         await Promise.all([
             invoke('guardar_ajustes_procesamiento', { ajustes: ajustesPorDefecto }),
-            invoke('guardar_mapeo_insumos', { mapeo: mapeoPorDefecto })
+            invoke('guardar_mapeo_insumos', { mapeo: mapeoPorDefecto }),
+            invoke('guardar_vista_compacta', { activa: false }),
+            invoke('guardar_vista_compacta_grupos', { activa: false }),
+            invoke('guardar_grupos_por_pagina', { cantidad: GRUPOS_POR_PAGINA_POR_DEFECTO })
         ]);
 
         ajustesProcesamiento = ajustesPorDefecto;
         mapeoInsumos = mapeoPorDefecto;
+        vistaCompactaGuardada = false;
+        vistaCompactaGruposGuardada = false;
+        gruposPorPaginaGuardado = GRUPOS_POR_PAGINA_POR_DEFECTO;
         volcarAjustesEnModal();
         volcarMapeoEnModal();
+
+        // El tema, el formato y la vista compacta vuelven con el resto.
+        formatoNumerosVista = null;
+        aplicarTema(ajustesProcesamiento.tema);
+        reformatearCantidadesTabla();
+        aplicarVistaCompacta(false);
+        aplicarVistaCompactaGrupos(false);
+        aplicarGruposPorPagina(GRUPOS_POR_PAGINA_POR_DEFECTO);
 
         await window.__TAURI__.dialog.message(
             'Los ajustes generales y el mapeo de insumos volvieron a sus valores por defecto.',
@@ -2671,6 +2948,15 @@ async function guardarAjustesDesdeModal() {
     const guardarBtn = document.getElementById('btnGuardarAjustes');
     const nuevosAjustes = leerAjustesDesdeModal();
     const nuevoMapeo = leerMapeoDesdeModal();
+    const nuevaVistaCompacta = Boolean(
+        document.getElementById('ajusteVistaCompacta')?.checked
+    );
+    const nuevaVistaCompactaGrupos = Boolean(
+        document.getElementById('ajusteVistaCompactaGrupos')?.checked
+    );
+    const nuevosGruposPorPagina = normalizarGruposPorPagina(
+        document.getElementById('ajusteGruposPorPagina')?.value
+    );
 
     // Validación en la interfaz con el mismo criterio que el backend, para no
     // guardar un mapeo que luego rompa la lectura de los Excel.
@@ -2691,11 +2977,23 @@ async function guardarAjustesDesdeModal() {
         // Cada configuración se persiste en su propia clave de config.json.
         await Promise.all([
             invoke('guardar_ajustes_procesamiento', { ajustes: nuevosAjustes }),
-            invoke('guardar_mapeo_insumos', { mapeo: nuevoMapeo })
+            invoke('guardar_mapeo_insumos', { mapeo: nuevoMapeo }),
+            invoke('guardar_vista_compacta', { activa: nuevaVistaCompacta }),
+            invoke('guardar_vista_compacta_grupos', { activa: nuevaVistaCompactaGrupos }),
+            invoke('guardar_grupos_por_pagina', { cantidad: nuevosGruposPorPagina })
         ]);
 
         ajustesProcesamiento = nuevosAjustes;
         mapeoInsumos = nuevoMapeo;
+        vistaCompactaGuardada = nuevaVistaCompacta;
+        vistaCompactaGruposGuardada = nuevaVistaCompactaGrupos;
+        gruposPorPaginaGuardado = nuevosGruposPorPagina;
+
+        // Lo previsualizado pasa a ser el estado persistido.
+        formatoNumerosVista = null;
+        aplicarTema(ajustesProcesamiento.tema);
+        reformatearCantidadesTabla();
+        aplicarVistaCompacta(vistaCompactaGuardada);
 
         cerrarAjustesProcesamiento();
 
@@ -2722,7 +3020,11 @@ async function abrirAjustesProcesamiento() {
 
     // Espera la carga inicial para mostrar los valores persistidos.
     try {
-        await (ajustesCargadosPromise || Promise.resolve());
+        await Promise.all([
+            ajustesCargadosPromise || Promise.resolve(),
+            vistaCompactaCargadaPromise || Promise.resolve(),
+            gruposVistaCargadaPromise || Promise.resolve()
+        ]);
     } catch (error) {
         console.error('No se pudieron cargar los ajustes antes de abrir el modal:', error);
     }
@@ -2766,7 +3068,7 @@ async function abrirAjustesProcesamiento() {
 
     const subtitulo = document.createElement('span');
     subtitulo.className = 'colors-modal-subtitle';
-    subtitulo.textContent = 'Preferencias generales y mapeo de insumos · config.json';
+    subtitulo.textContent = 'Configuración general de la aplicación';
     titulo.appendChild(subtitulo);
 
     const cerrarBtn = document.createElement('button');
@@ -2779,7 +3081,7 @@ async function abrirAjustesProcesamiento() {
 
     header.append(titulo, cerrarBtn);
 
-    // --- Pestaña "General" ---
+    // --- Pestaña "General" (procesamiento + apariencia + datos) ---
     const gridGeneral = document.createElement('div');
     gridGeneral.className = 'settings-grid';
     gridGeneral.append(
@@ -2791,12 +3093,88 @@ async function abrirAjustesProcesamiento() {
             min: 0,
             step: 100,
             pista: 'Espera antes de procesar automáticamente. Ej: 500.'
+        }),
+        crearSelectAjuste({
+            id: 'ajusteFormatoNumeros',
+            etiqueta: 'Formato de números',
+            valor: ajustesProcesamiento.formatoNumeros,
+            opciones: FORMATOS_NUMEROS_AJUSTES,
+            pista: 'Solo cambia cómo se ven las cantidades: los cálculos y el Excel siguen usando punto decimal.',
+            onChange: (valor) => {
+                formatoNumerosVista = valor;
+                reformatearCantidadesTabla();
+            }
+        })
+    );
+
+    // Apariencia: interruptores lado a lado (el tercero hace wrap).
+    const gridApariencia = document.createElement('div');
+    gridApariencia.className = 'settings-grid';
+    gridApariencia.append(
+        crearToggleAjuste({
+            id: 'ajusteTema',
+            etiqueta: 'Tema',
+            marcado: ajustesProcesamiento.tema === 'oscuro',
+            texto: 'Modo Oscuro',
+            pista: 'Cambia la apariencia general de la aplicación.',
+            // Previsualización inmediata; al cerrar sin guardar se revierte.
+            onChange: (oscuro) => aplicarTema(oscuro ? 'oscuro' : 'claro')
+        }),
+        crearToggleAjuste({
+            id: 'ajusteVistaCompacta',
+            etiqueta: 'Vista compacta de archivos',
+            marcado: vistaCompactaActiva,
+            texto: 'Activada',
+            pista: 'Muestra la lista de archivos en una sola línea, con el nombre truncado.',
+            // Previsualización inmediata; al cerrar sin guardar se revierte.
+            onChange: (marcado) => aplicarVistaCompacta(marcado)
+        }),
+        crearToggleAjuste({
+            id: 'ajusteVistaCompactaGrupos',
+            etiqueta: 'Vista compacta de grupos',
+            marcado: vistaCompactaGruposActiva,
+            texto: 'Activada',
+            pista: 'Muestra cada grupo en una sola línea, con el nombre truncado. Pasa el mouse por encima para verlo completo.',
+            // Previsualización inmediata; al cerrar sin guardar se revierte.
+            onChange: (marcado) => aplicarVistaCompactaGrupos(marcado)
+        })
+    );
+
+    // Paginación de la lista de grupos. Se ofrece un select porque los tamaños
+    // útiles son pocos y así se evita validar números escritos a mano.
+    const opcionesGruposPorPagina = GRUPOS_POR_PAGINA_OPCIONES.map(cantidad => ({
+        valor: String(cantidad),
+        texto: String(cantidad)
+    }));
+
+    // Si el store trae un valor fuera de la lista (editado a mano, versión
+    // anterior), se añade para no mostrarle al usuario una cantidad distinta
+    // de la que realmente usa la lista.
+    if (!GRUPOS_POR_PAGINA_OPCIONES.includes(gruposPorPaginaActivo)) {
+        opcionesGruposPorPagina.push({
+            valor: String(gruposPorPaginaActivo),
+            texto: String(gruposPorPaginaActivo)
+        });
+        opcionesGruposPorPagina.sort((a, b) => Number(a.valor) - Number(b.valor));
+    }
+
+    const gridPaginacion = document.createElement('div');
+    gridPaginacion.className = 'settings-grid';
+    gridPaginacion.append(
+        crearSelectAjuste({
+            id: 'ajusteGruposPorPagina',
+            etiqueta: 'Elementos por página en grupos',
+            valor: String(gruposPorPaginaActivo),
+            opciones: opcionesGruposPorPagina,
+            pista: 'Si hay más grupos que este límite, la lista muestra botones para pasar de página.',
+            // Previsualización inmediata; al cerrar sin guardar se revierte.
+            onChange: (valor) => aplicarGruposPorPagina(valor)
         })
     );
 
     const notaGeneral = document.createElement('p');
     notaGeneral.className = 'settings-note';
-    notaGeneral.textContent = 'Las reglas de columnas, filtros, cabeceras y asociaciones de ingredientes están en la pestaña "Mapeo de Insumos".';
+    notaGeneral.textContent = 'Las reglas de columnas, filtros, cabeceras y unidades están en la pestaña "Mapeo de Insumos".';
 
     // --- Pestaña "Mapeo de Insumos" ---
     const notaMapeo = document.createElement('p');
@@ -2829,8 +3207,8 @@ async function abrirAjustesProcesamiento() {
                 id: 'mapeoSinonimosCantidad',
                 valores: mapeoInsumos.sinonimosCantidad,
                 valoresPorDefecto: MAPEO_POR_DEFECTO.sinonimosCantidad,
-                placeholder: 'ej. qty',
-                pista: 'Columnas de cantidad genéricas, cuando no hay desglose.'
+                placeholder: 'ej. cant. / peso / q',
+                pista: 'Única lista de cantidad: acepta nombres, prefijos y abreviaturas de la columna.'
             },
             {
                 concepto: 'Total',
@@ -2843,39 +3221,9 @@ async function abrirAjustesProcesamiento() {
         ]
     );
 
-    const seccionCantidadesMapeo = crearTablaParesAjustes(
-        'Desglose de cantidades',
-        [
-            {
-                concepto: 'Etiquetas parciales',
-                id: 'mapeoEtiquetasCantidadParcial',
-                valores: mapeoInsumos.etiquetasCantidadParcial,
-                valoresPorDefecto: MAPEO_POR_DEFECTO.etiquetasCantidadParcial,
-                placeholder: 'ej. x',
-                pista: 'Columnas que se suman entre sí: A, B, C, TP, TA… (al menos una regla de cantidad es obligatoria).'
-            },
-            {
-                concepto: 'Prefijos',
-                id: 'mapeoPrefijosCantidad',
-                valores: mapeoInsumos.prefijosCantidad,
-                valoresPorDefecto: MAPEO_POR_DEFECTO.prefijosCantidad,
-                placeholder: 'ej. cant.',
-                pista: 'Prefijos que puede llevar una columna parcial: "Cantidad A", "Cant. B".'
-            }
-        ]
-    );
-
     const seccionFiltrosMapeo = crearTablaParesAjustes(
         'Filtros de lectura',
         [
-            {
-                concepto: 'Palabras monetarias',
-                id: 'mapeoPalabrasMonetarias',
-                valores: mapeoInsumos.palabrasMonetarias,
-                valoresPorDefecto: MAPEO_POR_DEFECTO.palabrasMonetarias,
-                placeholder: 'ej. subtotal',
-                pista: 'Si la cabecera contiene una de estas palabras, la columna nunca se toma como cantidad.'
-            },
             {
                 concepto: 'Palabras que descartan filas',
                 id: 'mapeoPalabrasFilaIgnorada',
@@ -2917,49 +3265,12 @@ async function abrirAjustesProcesamiento() {
             min: 1,
             step: 1,
             pista: 'Cuántas filas se revisan desde el inicio (por defecto 15).'
-        }),
-        crearSelectAjuste({
-            id: 'mapeoUnidadPorDefecto',
-            etiqueta: 'Unidad por defecto',
-            valor: mapeoInsumos.unidadPorDefecto,
-            opciones: UNIDADES_AJUSTES,
-            pista: 'Se usa cuando la fila no indica una unidad.'
         })
     );
 
     const seccionLecturaMapeo = seccionAjustes(
         'Lectura de la cabecera',
         gridLecturaMapeo
-    );
-
-    const seccionAsociacionesMapeo = seccionAjustes(
-        'Asociaciones de ingredientes',
-        crearEditorAsociacionesAjuste({
-            id: 'mapeoAsociacionesIngredientes',
-            etiqueta: 'Alias en el Excel → nombre canónico',
-            valores: mapeoInsumos.asociacionesIngredientes,
-            pista: 'Cuando el Excel trae un nombre distinto (ej. "azucar"), se consolida y muestra con el nombre canónico (ej. "Azúcar").'
-        })
-    );
-
-    // --- Pestaña "Interfaz" ---
-    const gridInterfaz = document.createElement('div');
-    gridInterfaz.className = 'settings-grid';
-    gridInterfaz.append(
-        crearSelectAjuste({
-            id: 'ajusteTema',
-            etiqueta: 'Tema',
-            valor: ajustesProcesamiento.tema,
-            opciones: TEMAS_AJUSTES,
-            pista: 'Apariencia general de la aplicación.'
-        }),
-        crearSelectAjuste({
-            id: 'ajusteFormatoNumeros',
-            etiqueta: 'Formato de números',
-            valor: ajustesProcesamiento.formatoNumeros,
-            opciones: FORMATOS_NUMEROS_AJUSTES,
-            pista: 'Cómo se muestran las cantidades y los totales.'
-        })
     );
 
     // --- Pestaña "Exportación" ---
@@ -2979,7 +3290,7 @@ async function abrirAjustesProcesamiento() {
         gridColumnas
     );
 
-    // --- Pestaña "Sistema" ---
+    // --- Pestaña "Sistema" (ahora dentro de General) ---
     const seccionIngredientes = seccionAjustes(
         'Ingredientes no encontrados',
         crearSelectAjuste({
@@ -2998,7 +3309,7 @@ async function abrirAjustesProcesamiento() {
     btnCarpetaDatos.type = 'button';
     btnCarpetaDatos.className = 'settings-cancel';
     btnCarpetaDatos.textContent = 'Abrir carpeta de datos';
-    btnCarpetaDatos.title = 'Abre en el explorador la carpeta donde se guarda config.json';
+    btnCarpetaDatos.title = 'Abre en el explorador la carpeta donde se guardan los datos de la aplicación';
     btnCarpetaDatos.addEventListener('click', abrirCarpetaDatosDesdeModal);
 
     const btnRestablecer = document.createElement('button');
@@ -3021,13 +3332,13 @@ async function abrirAjustesProcesamiento() {
 
     const aviso = document.createElement('p');
     aviso.className = 'settings-note';
-    aviso.textContent = 'Los ajustes generales y el mapeo de insumos se guardan por separado en config.json.';
+    aviso.textContent = 'Los ajustes generales y el mapeo de insumos se guardan de forma independiente.';
 
     const pestanas = crearPestanasAjustes([
         {
             id: 'general',
             etiqueta: 'General',
-            contenido: [gridGeneral, notaGeneral]
+            contenido: [gridGeneral, gridApariencia, gridPaginacion, seccionIngredientes, seccionDatos, notaGeneral]
         },
         {
             id: 'mapeo',
@@ -3035,42 +3346,23 @@ async function abrirAjustesProcesamiento() {
             contenido: [
                 notaMapeo,
                 seccionColumnasMapeo,
-                seccionCantidadesMapeo,
                 seccionFiltrosMapeo,
                 seccionUnidadesMapeo,
-                seccionLecturaMapeo,
-                seccionAsociacionesMapeo
+                seccionLecturaMapeo
             ]
-        },
-        {
-            id: 'interfaz',
-            etiqueta: 'Interfaz',
-            contenido: [gridInterfaz]
         },
         {
             id: 'exportacion',
             etiqueta: 'Exportación',
             contenido: [
-                crearCampoAjuste({
-                    id: 'ajustePrefijoExportacion',
-                    etiqueta: 'Prefijo / nombre por defecto',
-                    valor: ajustesProcesamiento.prefijoExportacion,
-                    placeholder: 'Resumen_',
-                    pista: 'Se antepone al nombre sugerido al exportar.'
-                }),
                 crearCheckboxAjuste({
                     id: 'ajusteIncluirColores',
                     etiqueta: 'Incluir colores en exportación',
                     marcado: ajustesProcesamiento.incluirColoresExportacion,
-                    pista: 'Mantiene el color de cada fila en el archivo exportado.'
+                    pista: 'Mantiene el color de cada fila en el Excel y en el PDF.'
                 }),
                 seccionColumnas
             ]
-        },
-        {
-            id: 'sistema',
-            etiqueta: 'Sistema',
-            contenido: [seccionIngredientes, seccionDatos]
         }
     ]);
 
@@ -3082,7 +3374,7 @@ async function abrirAjustesProcesamiento() {
 
     const pista = document.createElement('span');
     pista.className = 'link-modal-hint';
-    pista.textContent = 'Se guardan en config.json al confirmar.';
+    pista.textContent = 'Los cambios se guardarán al confirmar.';
 
     const acciones = document.createElement('div');
     acciones.className = 'settings-actions';
@@ -3298,6 +3590,7 @@ async function cargarArchivosRecientes() {
 
         // Refresca los tags de grupos cuando la lista se vuelve a pintar
         aplicarTagsVinculacion();
+        actualizarBotonEliminarSeleccionados();
     } catch (error) {
         console.error("Error al cargar archivos recientes:", error);
     }
@@ -4985,6 +5278,36 @@ const COLUMNAS_EXPORTACION = [
     'Comentarios'
 ];
 
+// Columnas configuradas en "Exportación" que el usuario eligió exportar.
+// Conserva el orden fijo del modal e ignora cualquier id desconocido.
+function columnasExportacionActivas() {
+    const seleccionadas = new Set(
+        Array.isArray(ajustesProcesamiento?.columnasExportacion)
+            ? ajustesProcesamiento.columnasExportacion
+            : AJUSTES_POR_DEFECTO.columnasExportacion
+    );
+
+    return COLUMNAS_AJUSTES_EXPORTACION.filter(columna => seleccionadas.has(columna.id));
+}
+
+function incluirColoresExportacion() {
+    return Boolean(ajustesProcesamiento?.incluirColoresExportacion);
+}
+
+// Color de fondo de una fila para exportar (hex) o null si no tiene color.
+function colorFilaExportacion(fila) {
+    const colorId = coloresIngredientes.get(fila.dataset.idFila);
+    return colorId ? (COLORES_POR_ID.get(colorId) || null) : null;
+}
+
+// Aviso común cuando el usuario desmarcó todas las columnas.
+function avisarSinColumnasExportacion() {
+    alert(
+        'No hay columnas seleccionadas para exportar.\n\n'
+        + 'Elige al menos una en Ajustes → Exportación.'
+    );
+}
+
 // Filas de datos que el usuario está viendo (sin `hidden` ni display: none)
 function filasVisiblesTabla() {
     const tbody = document.getElementById('tablaConsolidadaBody');
@@ -5013,37 +5336,45 @@ function codigoDeFila(fila) {
     return (celda.innerText || '').trim();
 }
 
-// Cantidad de una fila: prioriza el input editable (valor modificado a mano)
-// sobre el texto de la celda. Si el input quedó inválido, cae al estado en
-// memoria y, en último término, al texto plano.
+// Texto numérico para exportar: siempre con punto decimal y sin artefactos de
+// coma flotante (p. ej. 12.340000000000002). El formato visual no interviene.
+function textoNumeroExportacion(numero) {
+    if (!Number.isFinite(numero)) return '';
+    return String(Number(numero.toFixed(6)));
+}
+
+// Cantidad de una fila para exportar. Se prioriza el estado en memoria (con el
+// valor completo, sin redondear) para que "sin decimales" no altere el archivo.
+// El texto se devuelve siempre con punto decimal: Excel lo interpreta igual.
 function cantidadDeFila(fila) {
+    const ingrediente = ingredientePorIdFila(fila.dataset.idFila);
+    const desdeEstado = Number(ingrediente?.cantidad);
+    if (ingrediente && Number.isFinite(desdeEstado)) {
+        return textoNumeroExportacion(desdeEstado);
+    }
+
     const input = fila.querySelector('.input-cantidad');
     if (input) {
-        const texto = String(input.value).trim().replace(',', '.');
-        if (Number.isFinite(Number.parseFloat(texto))) return texto;
-
-        const ingrediente = ingredientePorIdFila(fila.dataset.idFila);
-        if (ingrediente) return formatearCantidad(ingrediente.cantidad);
+        const desdeInput = parsearNumeroTabla(input.value);
+        if (Number.isFinite(desdeInput)) return textoNumeroExportacion(desdeInput);
     }
 
     return (fila.children[3]?.innerText || '').trim();
 }
 
-// Cantidad total de una fila: prioriza el input editable (valor modificado a
-// mano) y cae al estado en memoria. Sin total calculado se exporta "—", igual
-// que antes de hacer editable la columna.
+// Cantidad total de una fila: mismo criterio que `cantidadDeFila`. Sin total
+// calculado se exporta "—", igual que antes de hacer editable la columna.
 function cantidadTotalDeFila(fila) {
+    const ingrediente = ingredientePorIdFila(fila.dataset.idFila);
+    const desdeEstado = Number(ingrediente?.cantidad_total);
+    if (ingrediente && Number.isFinite(desdeEstado)) {
+        return textoNumeroExportacion(desdeEstado);
+    }
+
     const input = fila.querySelector('.input-cantidad-total');
     if (input) {
-        const texto = String(input.value).trim().replace(',', '.');
-        if (Number.isFinite(Number.parseFloat(texto))) return texto;
-
-        const ingrediente = ingredientePorIdFila(fila.dataset.idFila);
-        if (ingrediente) {
-            const desdeEstado = valorTotalTexto(ingrediente);
-            if (desdeEstado !== '') return desdeEstado;
-        }
-
+        const desdeInput = parsearNumeroTabla(input.value);
+        if (Number.isFinite(desdeInput)) return textoNumeroExportacion(desdeInput);
         return '—';
     }
 
@@ -5103,6 +5434,14 @@ async function exportarExcel() {
         return;
     }
 
+    const columnas = columnasExportacionActivas();
+    if (columnas.length === 0) {
+        avisarSinColumnasExportacion();
+        return;
+    }
+
+    const incluirColores = incluirColoresExportacion();
+
     // Diálogo nativo "Guardar como".
     let ruta;
     try {
@@ -5122,20 +5461,32 @@ async function exportarExcel() {
     // El diálogo no añade la extensión por sí solo.
     if (!/\.xlsx$/i.test(ruta)) ruta += '.xlsx';
 
-    // Primera fila = encabezados; luego solo las filas visibles por el filtro.
+    // Se envían todas las columnas y Rust descarta las no elegidas. Así el
+    // orden de `columnasNumericas` sigue apuntando a los índices originales.
     const datos = [
         COLUMNAS_EXPORTACION,
         ...filas.map(datosFilaTabla)
     ];
 
+    // Arreglo alineado con las filas de datos: hex del color o null.
+    const coloresFilas = filas.map(fila =>
+        incluirColores ? colorFilaExportacion(fila) : null
+    );
+
     try {
         await invoke('exportar_excel', {
             datos,
             columnasNumericas: COLUMNAS_NUMERICAS_EXPORTACION,
+            incluirColores,
+            columnas: columnas.map(columna => columna.id),
+            coloresFilas,
             ruta
         });
 
-        console.log(`[export] Excel generado con ${filas.length} fila(s) visible(s): ${ruta}`);
+        console.log(
+            `[export] Excel generado con ${filas.length} fila(s) y ` +
+            `${columnas.length} columna(s) (colores: ${incluirColores ? 'sí' : 'no'}): ${ruta}`
+        );
     } catch (error) {
         console.error('No se pudo generar el Excel:', error);
         await window.__TAURI__.dialog.message(
@@ -5183,9 +5534,10 @@ function construirCabeceraImpresion() {
     return copia;
 }
 
-// Hoja de impresión: cabecera del reporte + tabla en texto plano (sin inputs)
-// y sin colores de fila, para que el PDF salga limpio en blanco y negro.
-function construirHojaImpresion(filas) {
+// Hoja de impresión: cabecera del reporte + tabla en texto plano (sin inputs).
+// Las columnas no elegidas se marcan con `.ocultar-en-exportacion` (la regla
+// vive en @media print) y, si el usuario lo pidió, cada fila conserva su color.
+function construirHojaImpresion(filas, { columnas, incluirColores }) {
     const hoja = document.createElement('section');
     hoja.className = 'solo-impresion';
 
@@ -5195,11 +5547,17 @@ function construirHojaImpresion(filas) {
     const tabla = document.createElement('table');
     tabla.className = 'print-table';
 
+    // `columnas` es un Set de ids estables (ingrediente, codigo, …).
+    const visibles = columnas instanceof Set ? columnas : new Set();
+
     const thead = document.createElement('thead');
     const filaCabecera = document.createElement('tr');
-    COLUMNAS_EXPORTACION.forEach(nombre => {
+    COLUMNAS_AJUSTES_EXPORTACION.forEach((columna, indice) => {
         const th = document.createElement('th');
-        th.textContent = nombre;
+        th.textContent = COLUMNAS_EXPORTACION[indice];
+        if (!visibles.has(columna.id)) {
+            th.classList.add('ocultar-en-exportacion');
+        }
         filaCabecera.appendChild(th);
     });
     thead.appendChild(filaCabecera);
@@ -5208,9 +5566,20 @@ function construirHojaImpresion(filas) {
     filas.forEach(fila => {
         const tr = document.createElement('tr');
 
-        datosFilaTabla(fila).forEach(valor => {
+        if (incluirColores) {
+            const color = colorFilaExportacion(fila);
+            if (color) tr.style.backgroundColor = color;
+        }
+
+        datosFilaTabla(fila).forEach((valor, indice) => {
             const td = document.createElement('td');
             td.textContent = valor;
+
+            const columna = COLUMNAS_AJUSTES_EXPORTACION[indice];
+            if (!columna || !visibles.has(columna.id)) {
+                td.classList.add('ocultar-en-exportacion');
+            }
+
             tr.appendChild(td);
         });
 
@@ -5231,21 +5600,42 @@ function exportarPdf() {
         return;
     }
 
+    const columnas = columnasExportacionActivas();
+    if (columnas.length === 0) {
+        avisarSinColumnasExportacion();
+        return;
+    }
+
+    const incluirColores = incluirColoresExportacion();
+
     // Se elimina cualquier hoja previa (p. ej. si se canceló una impresión)
     document.querySelectorAll('.solo-impresion').forEach(hoja => hoja.remove());
 
-    const hoja = construirHojaImpresion(filas);
+    const hoja = construirHojaImpresion(filas, {
+        columnas: new Set(columnas.map(columna => columna.id)),
+        incluirColores
+    });
     document.body.appendChild(hoja);
 
-    // Con esta clase, @media print oculta toda la app y deja solo la hoja
+    // Con esta clase, @media print oculta toda la app y deja solo la hoja.
+    // `imprimiendo-con-color` desactiva el forzado a blanco y negro y activa
+    // `print-color-adjust: exact` para que el motor de impresión respete los
+    // fondos de fila.
     document.body.classList.add('imprimiendo');
+    document.body.classList.toggle('imprimiendo-con-color', incluirColores);
 
     let temporizador = null;
 
     const limpiar = () => {
         if (temporizador) clearTimeout(temporizador);
         window.removeEventListener('afterprint', limpiar);
-        document.body.classList.remove('imprimiendo');
+        document.body.classList.remove('imprimiendo', 'imprimiendo-con-color');
+
+        // Restaura la visibilidad de las columnas ocultadas para exportar y
+        // retira la hoja temporal (la tabla real nunca se oculta).
+        hoja.querySelectorAll('.ocultar-en-exportacion').forEach(celda => {
+            celda.classList.remove('ocultar-en-exportacion');
+        });
         hoja.remove();
 
         // La cabecera se vacía para que un Ctrl+P posterior no muestre
@@ -5264,7 +5654,10 @@ function exportarPdf() {
         temporizador = setTimeout(limpiar, 30000);
     });
 
-    console.log(`[export] PDF preparado con ${filas.length} fila(s) visible(s).`);
+    console.log(
+        `[export] PDF preparado con ${filas.length} fila(s) y ` +
+        `${columnas.length} columna(s) (colores: ${incluirColores ? 'sí' : 'no'}).`
+    );
 }
 
 // Lee los colores persistidos al iniciar la app.
@@ -5790,6 +6183,142 @@ function abrirResumenColores() {
     cerrarBtn.focus();
 }
 
+// --- ELIMINACIÓN DE ARCHIVOS DE LA LISTA ---
+// La selección reutiliza las casillas `.chk-file` de cada archivo. El botón
+// "Eliminar seleccionados" se habilita solo cuando hay al menos una marcada.
+function archivosSeleccionadosParaEliminar() {
+    return Array.from(
+        document.querySelectorAll('#fileList .excel-file-details')
+    ).filter(detalle => detalle.querySelector('.chk-file')?.checked);
+}
+
+function actualizarBotonEliminarSeleccionados() {
+    const boton = document.getElementById('btnEliminarSeleccionados');
+    if (!boton) return;
+
+    const cantidad = archivosSeleccionadosParaEliminar().length;
+    boton.disabled = cantidad === 0;
+    boton.title = cantidad === 0
+        ? 'Marca la casilla de uno o más archivos para poder eliminarlos'
+        : `Elimina de la lista ${cantidad === 1 ? 'el archivo marcado' : `los ${cantidad} archivos marcados`}`;
+}
+
+// Limpia del Store los datos que dependían de los archivos eliminados:
+//  - vinculaciones archivo → grupo (se borran las entradas de esas rutas),
+//  - colores de ingredientes que solo aportaban esos archivos.
+function limpiarDatosDeArchivosEliminados(rutas) {
+    const eliminadas = new Set(rutas);
+    if (eliminadas.size === 0) return;
+
+    let vinculacionesCambiadas = false;
+    eliminadas.forEach(ruta => {
+        if (vinculacionesArchivosGrupos.delete(ruta)) vinculacionesCambiadas = true;
+    });
+    if (vinculacionesCambiadas) persistirVinculaciones();
+
+    // Sin los datos crudos de la última consolidación no se puede saber qué
+    // ingredientes venían de cada archivo; se dejan los colores intactos.
+    if (!coloresCargados || !Array.isArray(ingredientesPorArchivo)) return;
+
+    const nombresRestantes = new Set();
+    const nombresEliminados = new Set();
+
+    ingredientesPorArchivo.forEach(({ ruta, datos }) => {
+        if (!Array.isArray(datos)) return;
+        const destino = eliminadas.has(ruta) ? nombresEliminados : nombresRestantes;
+
+        datos.forEach(ing => {
+            const nombre = claveNombreIngrediente(ing);
+            if (nombre) destino.add(nombre);
+        });
+    });
+
+    if (nombresEliminados.size === 0) return;
+
+    let coloresEliminados = 0;
+    nombresEliminados.forEach(nombre => {
+        // El ingrediente sigue existiendo en otro archivo: su color se conserva.
+        if (nombresRestantes.has(nombre)) return;
+
+        coloresIngredientes.forEach((_, clave) => {
+            const corte = clave.lastIndexOf(SEPARADOR_PK_COLOR);
+            const nombreClave = corte >= 0 ? clave.slice(0, corte) : clave;
+
+            if (nombreClave === nombre) {
+                coloresIngredientes.delete(clave);
+                coloresEliminados++;
+            }
+        });
+    });
+
+    if (coloresEliminados > 0) {
+        console.log(`[colores] Colores huérfanos eliminados: ${coloresEliminados}`);
+        persistirColoresFilas();
+    }
+}
+
+async function eliminarArchivosSeleccionados() {
+    const detalles = archivosSeleccionadosParaEliminar();
+    if (detalles.length === 0) return;
+
+    const cantidad = detalles.length;
+    const mensaje = cantidad === 1
+        ? '¿Estás seguro de que deseas eliminar el archivo seleccionado de la lista?\n\n'
+            + 'Esta acción no se puede deshacer. El archivo original no se borra del disco.'
+        : `¿Estás seguro de que deseas eliminar los ${cantidad} archivos seleccionados de la lista?\n\n`
+            + 'Esta acción no se puede deshacer. Los archivos originales no se borran del disco.';
+
+    const confirmar = await window.__TAURI__.dialog.ask(mensaje, {
+        title: 'Eliminar archivos seleccionados',
+        kind: 'warning',
+        okLabel: 'Eliminar',
+        cancelLabel: 'Cancelar'
+    });
+
+    if (!confirmar) return;
+
+    const boton = document.getElementById('btnEliminarSeleccionados');
+    if (boton) boton.disabled = true;
+
+    const rutasEliminadas = [];
+    const errores = [];
+
+    for (const detalle of detalles) {
+        const ruta = detalle.dataset.ruta;
+        if (!ruta) continue;
+
+        try {
+            await invoke('eliminar_archivo_reciente', { ruta });
+            detalle.remove();
+            rutasEliminadas.push(ruta);
+        } catch (error) {
+            console.error('Error al eliminar el archivo de la lista:', error);
+            const nombre = ruta.split(/[\\/]/).pop();
+            errores.push(`${nombre}: ${error}`);
+        }
+    }
+
+    if (rutasEliminadas.length > 0) {
+        limpiarDatosDeArchivosEliminados(rutasEliminadas);
+
+        // Las hojas de los archivos borrados ya no existen en el DOM. Se
+        // recalcula con la selección restante; si no queda ninguna hoja
+        // marcada, la tabla y los totales se vacían.
+        procesarHojasDebounced.cancelar();
+        desmarcarHojaDebounced.cancelar();
+        ejecutarProcesamientoHojas(++idSeleccionHojas, { silencioso: true });
+    }
+
+    actualizarBotonEliminarSeleccionados();
+
+    if (errores.length > 0) {
+        await window.__TAURI__.dialog.message(
+            `No se pudieron eliminar ${errores.length} archivo(s):\n\n${errores.join('\n')}`,
+            { title: 'Error al eliminar', kind: 'error' }
+        );
+    }
+}
+
 async function eliminarArchivoDeLista(detalles) {
     const ruta = detalles.dataset.ruta;
     const nombre = ruta.split(/[\\/]/).pop();
@@ -5811,10 +6340,10 @@ async function eliminarArchivoDeLista(detalles) {
         await invoke('eliminar_archivo_reciente', { ruta });
         detalles.remove();
 
-        // Un archivo eliminado de la lista no debe conservar vinculaciones
-        if (vinculacionesArchivosGrupos.delete(ruta)) {
-            persistirVinculaciones();
-        }
+        // Un archivo eliminado no debe conservar vinculaciones ni colores que
+        // solo dependían de él.
+        limpiarDatosDeArchivosEliminados([ruta]);
+        actualizarBotonEliminarSeleccionados();
 
         // Sus hojas ya no forman parte de la selección: se programa un único
         // reprocesamiento (debounced) para recalcular con lo que quede.
@@ -6017,9 +6546,107 @@ function limpiarCodigosTabla() {
 // se marca `modificadoManualmente` y se conserva `cantidadOriginal` (la lectura
 // del Excel) para poder restaurarla desde el menú contextual.
 
-function formatearCantidad(valor) {
+// Formato de números activo para la UI. `formatoNumerosVista` solo existe
+// mientras el modal previsualiza un cambio sin guardar.
+function formatoNumerosActivo() {
+    return formatoNumerosVista
+        || ajustesProcesamiento?.formatoNumeros
+        || AJUSTES_POR_DEFECTO.formatoNumeros;
+}
+
+// Agrupa la parte entera con el separador indicado (sin tocar el signo).
+function agruparEntero(numero, separadorMiles) {
+    const signo = numero < 0 ? '-' : '';
+    const digitos = String(Math.abs(Math.trunc(numero)));
+    return signo + digitos.replace(/\B(?=(\d{3})+(?!\d))/g, separadorMiles);
+}
+
+// Da formato visual a una cantidad según el ajuste. Nunca se usa para
+// calcular ni para exportar: solo para pintar inputs y tooltips.
+//  - punto:        1,234.56
+//  - coma:         1.234,56
+//  - sin-decimales: 1,235
+function formatearNumeroTabla(valor) {
     const numero = Number(valor);
-    return Number.isFinite(numero) ? numero.toFixed(2) : '0.00';
+    if (!Number.isFinite(numero)) return '';
+
+    const formato = formatoNumerosActivo();
+
+    if (formato === 'sin-decimales') {
+        return agruparEntero(Math.round(numero), ',');
+    }
+
+    const [entero, decimal] = Math.abs(numero).toFixed(2).split('.');
+    const signo = numero < 0 && Number(`${entero}.${decimal}`) !== 0 ? '-' : '';
+    const separadorMiles = formato === 'coma' ? '.' : ',';
+    const separadorDecimal = formato === 'coma' ? ',' : '.';
+
+    return `${signo}${entero.replace(/\B(?=(\d{3})+(?!\d))/g, separadorMiles)}`
+        + `${separadorDecimal}${decimal}`;
+}
+
+// Convierte el texto mostrado (con punto o coma) al número real. Acepta los
+// tres formatos de la app y también valores pegados desde Excel. Devuelve NaN
+// si no hay un número reconocible.
+function parsearNumeroTabla(valor) {
+    const texto = String(valor ?? '').trim();
+    if (texto === '') return NaN;
+
+    const limpio = texto.replace(/[^\d.,+-]/g, '');
+    if (!limpio) return NaN;
+
+    const tieneComa = limpio.includes(',');
+    const tienePunto = limpio.includes('.');
+    let normalizado = limpio;
+
+    if (tieneComa && tienePunto) {
+        // Con ambos separadores, el último es el decimal.
+        normalizado = limpio.lastIndexOf(',') > limpio.lastIndexOf('.')
+            ? limpio.replace(/\./g, '').replace(',', '.')
+            : limpio.replace(/,/g, '');
+    } else if (tieneComa) {
+        // La coma es decimal en "coma"; en los demás formatos separa miles.
+        normalizado = formatoNumerosActivo() === 'coma'
+            ? limpio.replace(',', '.')
+            : limpio.replace(/,/g, '');
+    } else if (tienePunto && formatoNumerosActivo() === 'coma') {
+        // En "coma" el punto solo puede ser separador de miles, salvo que
+        // parezca un decimal tecleado a la inglesa ("1.5").
+        const partes = limpio.split('.');
+        const pareceMiles = partes.length > 2
+            || (partes.length === 2 && partes[1].length === 3 && partes[0].length > 0);
+        normalizado = pareceMiles ? limpio.replace(/\./g, '') : limpio;
+    }
+
+    const numero = Number.parseFloat(normalizado);
+    return Number.isFinite(numero) ? numero : NaN;
+}
+
+function formatearCantidad(valor) {
+    const texto = formatearNumeroTabla(valor);
+    return texto === '' ? '0' : texto;
+}
+
+// Repinta Cantidad y Total de las filas ya dibujadas sin tocar los datos.
+// Se usa al guardar/restablecer el formato y al previsualizarlo en el modal.
+function reformatearCantidadesTabla() {
+    const tbody = document.getElementById('tablaConsolidadaBody');
+    if (!tbody) return;
+
+    tbody.querySelectorAll('tr[data-id-fila]').forEach(fila => {
+        const ingrediente = ingredientePorIdFila(fila.dataset.idFila);
+        if (!ingrediente) return;
+
+        const inputCantidad = fila.querySelector('.input-cantidad');
+        if (inputCantidad) {
+            inputCantidad.value = formatearCantidad(ingrediente.cantidad);
+        }
+
+        const inputTotal = fila.querySelector('.input-cantidad-total');
+        if (inputTotal) {
+            inputTotal.value = valorTotalTexto(ingrediente);
+        }
+    });
 }
 
 // Busca la fila de estado por su pk de color (nombre normalizado + unidad),
@@ -6047,9 +6674,10 @@ function crearCeldaCantidad(item) {
     const estado = ingredientePorIdFila(pkColorFila(item)) || item;
 
     const input = document.createElement('input');
-    input.type = 'number';
+    input.type = 'text';
+    input.inputMode = 'decimal';
+    input.autocomplete = 'off';
     input.className = 'input-cantidad';
-    input.step = 'any';
     input.value = formatearCantidad(estado.cantidad);
     input.title = tituloInputCantidad(estado);
 
@@ -6100,8 +6728,7 @@ function valorTotalTexto(ingrediente) {
     const valor = ingrediente?.cantidad_total;
     if (valor === undefined || valor === null) return '';
 
-    const numero = Number(valor);
-    return Number.isFinite(numero) ? numero.toFixed(2) : '';
+    return formatearNumeroTabla(valor);
 }
 
 function tituloInputTotal(ingrediente) {
@@ -6117,9 +6744,10 @@ function crearCeldaCantidadTotal(item) {
     const estado = ingredientePorIdFila(pkColorFila(item)) || item;
 
     const input = document.createElement('input');
-    input.type = 'number';
+    input.type = 'text';
+    input.inputMode = 'decimal';
+    input.autocomplete = 'off';
     input.className = 'input-cantidad-total';
-    input.step = 'any';
     input.placeholder = '—';
 
     input.value = estado.totalModificadoManualmente
@@ -6142,8 +6770,7 @@ function aplicarTotalManual(input, { confirmar = false } = {}) {
 
     if (!ingrediente) return;
 
-    const texto = String(input.value).trim().replace(',', '.');
-    const valor = Number.parseFloat(texto);
+    const valor = parsearNumeroTabla(input.value);
 
     if (!Number.isFinite(valor)) {
         if (confirmar) {
@@ -6241,8 +6868,7 @@ function aplicarCantidadManual(input, { confirmar = false } = {}) {
 
     if (!ingrediente) return;
 
-    const texto = String(input.value).trim().replace(',', '.');
-    const valor = Number.parseFloat(texto);
+    const valor = parsearNumeroTabla(input.value);
 
     if (!Number.isFinite(valor)) {
         if (confirmar) {
