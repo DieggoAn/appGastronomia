@@ -125,6 +125,17 @@ pub fn eliminar_grupo(app: tauri::AppHandle, nombre_grupo: String) -> Result<(),
     Ok(())
 }
 
+/// Elimina todos los grupos guardados de grupos.json.
+#[tauri::command]
+pub fn eliminar_todos_los_grupos(app: tauri::AppHandle) -> Result<(), String> {
+    let store = app.store("grupos.json").map_err(|e| e.to_string())?;
+
+    store.clear();
+    store.save().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn auto_ajustar_proporciones(mut secciones: Vec<Seccion>) -> Result<Vec<Seccion>, String> {
     // 1. Buscar el valor máximo de alumnos (evitando el 0)
@@ -168,6 +179,98 @@ const MAX_SECCIONES_POR_GRUPO: u32 = 500;
 /// ...\n\nAlumnos: 17"); sin este límite, su "Alumnos:" se confundiría con la
 /// columna de alumnado.
 const MAX_LARGO_CABECERA: usize = 40;
+
+// Configuración persistida en config.json (misma que el resto de ajustes).
+const STORE_CONFIG: &str = "config.json";
+const CLAVE_MAPEO_GRUPOS: &str = "mapeo_grupos";
+
+/// Sinónimos de encabezados para la importación de grupos.
+///
+/// Cada lista reemplaza las palabras que antes estaban fijas en
+/// `clasificar_cabecera`: codigo, Asignatura, secciones y alumnos.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MapeoGrupos {
+    pub codigo: Vec<String>,
+    pub asignatura: Vec<String>,
+    pub secciones: Vec<String>,
+    pub alumnos: Vec<String>,
+}
+
+impl Default for MapeoGrupos {
+    fn default() -> Self {
+        Self {
+            codigo: vec!["codigo".to_string(), "cod".to_string(), "clave".to_string()],
+            asignatura: vec![
+                "asignatura".to_string(),
+                "materia".to_string(),
+                "ramo".to_string(),
+                "curso".to_string(),
+            ],
+            secciones: vec!["secciones".to_string(), "seccion".to_string()],
+            alumnos: vec![
+                "alumnos x seccion".to_string(),
+                "alumnos".to_string(),
+                "alumno".to_string(),
+            ],
+        }
+    }
+}
+
+impl MapeoGrupos {
+    /// Normaliza las listas para compararlas contra las cabeceras del Excel.
+    fn normalizado(&self) -> Self {
+        Self {
+            codigo: normalizar_lista_sinonimos(&self.codigo),
+            asignatura: normalizar_lista_sinonimos(&self.asignatura),
+            secciones: normalizar_lista_sinonimos(&self.secciones),
+            alumnos: normalizar_lista_sinonimos(&self.alumnos),
+        }
+    }
+}
+
+fn normalizar_lista_sinonimos(valores: &[String]) -> Vec<String> {
+    let mut normalizados: Vec<String> = Vec::new();
+
+    for valor in valores {
+        let normalizado = normalizar_cabecera(valor);
+        if normalizado.is_empty() || normalizados.contains(&normalizado) {
+            continue;
+        }
+
+        normalizados.push(normalizado);
+    }
+
+    normalizados
+}
+
+/// Valida que las cuatro listas tengan al menos un sinónimo utilizable.
+fn validar_mapeo_grupos(mapeo: &MapeoGrupos) -> Result<(), String> {
+    let mut faltantes: Vec<&str> = Vec::new();
+
+    if mapeo.codigo.is_empty() {
+        faltantes.push("Código");
+    }
+    if mapeo.asignatura.is_empty() {
+        faltantes.push("Asignatura");
+    }
+    if mapeo.secciones.is_empty() {
+        faltantes.push("Secciones");
+    }
+    if mapeo.alumnos.is_empty() {
+        faltantes.push("Alumnos");
+    }
+
+    if faltantes.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "El Mapeo de Grupos necesita al menos un sinónimo para: {}. \
+         Agrégalos en Ajustes → Mapeo de Grupos y vuelve a importar.",
+        faltantes.join(", ")
+    ))
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct SeccionImportada {
@@ -228,15 +331,30 @@ fn normalizar_cabecera(texto: &str) -> String {
         .to_string()
 }
 
+/// ¿La cabecera normalizada contiene el sinónimo como palabra/frase completa?
+/// Se acotan ambos lados con espacios para no confundir "cod" con "codigo".
+fn coincide_sinonimo(cabecera_normalizada: &str, sinonimos: &[String]) -> bool {
+    if sinonimos.is_empty() {
+        return false;
+    }
+
+    let acotada = format!(" {cabecera_normalizada} ");
+
+    sinonimos.iter().any(|sinonimo| {
+        !sinonimo.is_empty() && acotada.contains(&format!(" {sinonimo} "))
+    })
+}
+
 /// Clasifica una celda de encabezado en una de las cuatro columnas que
-/// necesita la importación. El orden importa: "alumnos x sección" debe ser
-/// alumnado (no secciones) y "Código Asignatura" debe ser código.
+/// necesita la importación, usando los sinónimos configurados por el usuario.
+/// El orden importa: "alumnos x sección" debe ser alumnado (no secciones) y
+/// "Código Asignatura" debe ser código.
 ///
 /// Solo se aceptan etiquetas cortas de una línea. Las celdas de una hoja de
 /// horarios contienen párrafos con "\n" y la frase "Alumnos: 17"; si se
 /// aceptaran, esa celda secuestraría la columna de alumnado de la tabla real
 /// (que puede estar más a la derecha en la misma fila).
-fn clasificar_cabecera(texto: &str) -> Option<TipoColumna> {
+fn clasificar_cabecera(texto: &str, mapeo: &MapeoGrupos) -> Option<TipoColumna> {
     if texto.contains('\n') || texto.contains('\r') {
         return None;
     }
@@ -246,21 +364,16 @@ fn clasificar_cabecera(texto: &str) -> Option<TipoColumna> {
         return None;
     }
 
-    if cabecera.contains("alumno") {
+    if coincide_sinonimo(&cabecera, &mapeo.alumnos) {
         return Some(TipoColumna::Alumnos);
     }
-    if cabecera.contains("seccion") {
+    if coincide_sinonimo(&cabecera, &mapeo.secciones) {
         return Some(TipoColumna::Secciones);
     }
-    if cabecera == "cod" || cabecera.starts_with("codigo") || cabecera == "clave" {
+    if coincide_sinonimo(&cabecera, &mapeo.codigo) {
         return Some(TipoColumna::Codigo);
     }
-    if cabecera.contains("asignatura")
-        || cabecera.contains("materia")
-        || cabecera.contains("ramo")
-        || cabecera == "curso"
-        || cabecera.starts_with("curso")
-    {
+    if coincide_sinonimo(&cabecera, &mapeo.asignatura) {
         return Some(TipoColumna::Asignatura);
     }
 
@@ -268,7 +381,10 @@ fn clasificar_cabecera(texto: &str) -> Option<TipoColumna> {
 }
 
 /// Busca la primera fila con las cuatro columnas reconocidas.
-fn detectar_columnas_importacion(filas: &[Vec<String>]) -> Option<ColumnasImportacion> {
+fn detectar_columnas_importacion(
+    filas: &[Vec<String>],
+    mapeo: &MapeoGrupos,
+) -> Option<ColumnasImportacion> {
     for (indice_fila, fila) in filas.iter().enumerate() {
         let mut codigo = None;
         let mut asignatura = None;
@@ -276,7 +392,7 @@ fn detectar_columnas_importacion(filas: &[Vec<String>]) -> Option<ColumnasImport
         let mut alumnos = None;
 
         for (indice_columna, celda) in fila.iter().enumerate() {
-            match clasificar_cabecera(celda) {
+            match clasificar_cabecera(celda, mapeo) {
                 Some(TipoColumna::Codigo) if codigo.is_none() => codigo = Some(indice_columna),
                 Some(TipoColumna::Asignatura) if asignatura.is_none() => {
                     asignatura = Some(indice_columna)
@@ -512,7 +628,11 @@ fn secciones_desde_texto(texto: &str, alumnos: u32) -> Vec<SeccionImportada> {
 
 /// Lee las filas de datos de una hoja ya identificada y fusiona los grupos
 /// repetidos: el mismo nombre acumula las secciones de todas sus filas.
-fn leer_grupos_de_hoja(range: &Range<Data>, columnas: &ColumnasImportacion) -> Vec<GrupoImportado> {
+fn leer_grupos_de_hoja(
+    range: &Range<Data>,
+    columnas: &ColumnasImportacion,
+    mapeo: &MapeoGrupos,
+) -> Vec<GrupoImportado> {
     let mut grupos: HashMap<String, GrupoImportado> = HashMap::new();
 
     for fila in range.rows().skip(columnas.fila_cabecera + 1) {
@@ -524,7 +644,7 @@ fn leer_grupos_de_hoja(range: &Range<Data>, columnas: &ColumnasImportacion) -> V
         }
 
         // Cabeceras repetidas en medio de la tabla.
-        if clasificar_cabecera(&codigo).is_some() {
+        if clasificar_cabecera(&codigo, mapeo).is_some() {
             continue;
         }
 
@@ -561,11 +681,17 @@ fn leer_grupos_de_hoja(range: &Range<Data>, columnas: &ColumnasImportacion) -> V
 }
 
 /// Núcleo sin `AppHandle`: se puede probar y reutilizar desde el comando.
-fn importar_grupos_desde_ruta(ruta: &str) -> Result<Vec<GrupoImportado>, String> {
+fn importar_grupos_desde_ruta(
+    ruta: &str,
+    mapeo: &MapeoGrupos,
+) -> Result<Vec<GrupoImportado>, String> {
     let ruta = ruta.trim();
     if ruta.is_empty() {
         return Err("No se indicó la ruta del archivo Excel.".to_string());
     }
+
+    let mapeo = mapeo.normalizado();
+    validar_mapeo_grupos(&mapeo)?;
 
     let mut workbook: Xlsx<_> =
         open_workbook(ruta).map_err(|e| format!("No se pudo abrir el archivo Excel: {e}"))?;
@@ -592,7 +718,7 @@ fn importar_grupos_desde_ruta(ruta: &str) -> Result<Vec<GrupoImportado>, String>
             .map(|fila| fila.iter().map(|celda| celda.to_string()).collect())
             .collect();
 
-        let columnas = match detectar_columnas_importacion(&filas_encabezado) {
+        let columnas = match detectar_columnas_importacion(&filas_encabezado, &mapeo) {
             Some(columnas) => columnas,
             None => continue,
         };
@@ -609,7 +735,7 @@ fn importar_grupos_desde_ruta(ruta: &str) -> Result<Vec<GrupoImportado>, String>
         .min()
         .unwrap_or(0);
 
-        let mut grupos = leer_grupos_de_hoja(&range, &columnas);
+        let mut grupos = leer_grupos_de_hoja(&range, &columnas, &mapeo);
 
         if grupos.is_empty() {
             if hoja_estructura_sin_filas.is_none() {
@@ -642,15 +768,56 @@ fn importar_grupos_desde_ruta(ruta: &str) -> Result<Vec<GrupoImportado>, String>
         ));
     }
 
-    Err("No se encontró ninguna hoja con las columnas «codigo», «Asignatura», \
-         «secciones» y «alumnos x seccion». Revisa que el archivo tenga una tabla \
-         con esos encabezados."
-        .to_string())
+    Err(format!(
+        "No se encontró ninguna hoja con las 4 columnas obligatorias. Se buscaron: \
+         Código [{}], Asignatura [{}], Secciones [{}], Alumnos [{}]. \
+         Revisa los encabezados del Excel o ajusta Ajustes → Mapeo de Grupos.",
+        mapeo.codigo.join(", "),
+        mapeo.asignatura.join(", "),
+        mapeo.secciones.join(", "),
+        mapeo.alumnos.join(", ")
+    ))
+}
+
+/// Devuelve los sinónimos configurados para importar grupos.
+#[tauri::command]
+pub fn obtener_mapeo_grupos(app: tauri::AppHandle) -> Result<MapeoGrupos, String> {
+    let store = app.store(STORE_CONFIG).map_err(|e| e.to_string())?;
+
+    let Some(valor) = store.get(CLAVE_MAPEO_GRUPOS) else {
+        return Ok(MapeoGrupos::default());
+    };
+
+    Ok(serde_json::from_value(valor).unwrap_or_default())
+}
+
+/// Guarda los sinónimos de columnas para la importación de grupos.
+#[tauri::command]
+pub fn guardar_mapeo_grupos(
+    app: tauri::AppHandle,
+    mapeo: MapeoGrupos,
+) -> Result<(), String> {
+    let store = app.store(STORE_CONFIG).map_err(|e| e.to_string())?;
+    let valor = serde_json::to_value(&mapeo).map_err(|e| e.to_string())?;
+
+    store.set(CLAVE_MAPEO_GRUPOS, valor);
+    store.save().map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 #[tauri::command]
-pub fn importar_grupos_excel(ruta: String) -> Result<Vec<GrupoImportado>, String> {
-    importar_grupos_desde_ruta(&ruta)
+pub fn importar_grupos_excel(
+    app: tauri::AppHandle,
+    ruta: String,
+    sinonimos: Option<MapeoGrupos>,
+) -> Result<Vec<GrupoImportado>, String> {
+    let mapeo = match sinonimos {
+        Some(mapeo) => mapeo,
+        None => obtener_mapeo_grupos(app)?,
+    };
+
+    importar_grupos_desde_ruta(&ruta, &mapeo)
 }
 
 // --- Pruebas de la importación ---
@@ -703,7 +870,9 @@ mod pruebas_importacion {
             ],
         ];
 
-        let columnas = detectar_columnas_importacion(&filas).expect("cabecera detectada");
+        let columnas =
+            detectar_columnas_importacion(&filas, &MapeoGrupos::default())
+                .expect("cabecera detectada");
 
         assert_eq!(columnas.fila_cabecera, 1);
         assert_eq!(
@@ -720,11 +889,11 @@ mod pruebas_importacion {
     #[test]
     fn codigo_asignatura_se_clasifica_como_codigo() {
         assert_eq!(
-            clasificar_cabecera("Código Asignatura"),
+            clasificar_cabecera("Código Asignatura", &MapeoGrupos::default()),
             Some(TipoColumna::Codigo)
         );
         assert_eq!(
-            clasificar_cabecera("Alumnos por sección"),
+            clasificar_cabecera("Alumnos por sección", &MapeoGrupos::default()),
             Some(TipoColumna::Alumnos)
         );
     }
@@ -802,7 +971,7 @@ mod pruebas_importacion {
 
         libro.save(&ruta).unwrap();
 
-        let grupos = importar_grupos_desde_ruta(ruta.to_str().unwrap())
+        let grupos = importar_grupos_desde_ruta(ruta.to_str().unwrap(), &MapeoGrupos::default())
             .expect("la importación debe leer el archivo de prueba");
         let _ = std::fs::remove_file(&ruta);
 
@@ -852,23 +1021,29 @@ mod pruebas_importacion {
         // párrafo: no debe considerarse encabezado de alumnado.
         let parrafo =
             "GAD401 - Taller de Supervisión\n\nSección : D-AGA-N6-P1-C3\n\nAlumnos: 16";
-        assert_eq!(clasificar_cabecera(parrafo), None);
+        assert_eq!(
+            clasificar_cabecera(parrafo, &MapeoGrupos::default()),
+            None
+        );
 
         // Una etiqueta desmesuradamente larga tampoco.
         let larga = format!("alumnos {}", "x".repeat(60));
-        assert_eq!(clasificar_cabecera(&larga), None);
+        assert_eq!(
+            clasificar_cabecera(&larga, &MapeoGrupos::default()),
+            None
+        );
 
         // Los encabezados reales siguen reconociéndose.
         assert_eq!(
-            clasificar_cabecera("alumnos x seccion"),
+            clasificar_cabecera("alumnos x seccion", &MapeoGrupos::default()),
             Some(TipoColumna::Alumnos)
         );
         assert_eq!(
-            clasificar_cabecera("Alumnos por sección"),
+            clasificar_cabecera("Alumnos por sección", &MapeoGrupos::default()),
             Some(TipoColumna::Alumnos)
         );
         assert_eq!(
-            clasificar_cabecera("secciones"),
+            clasificar_cabecera("secciones", &MapeoGrupos::default()),
             Some(TipoColumna::Secciones)
         );
     }
@@ -931,7 +1106,7 @@ mod pruebas_importacion {
 
         libro.save(&ruta).unwrap();
 
-        let grupos = importar_grupos_desde_ruta(ruta.to_str().unwrap())
+        let grupos = importar_grupos_desde_ruta(ruta.to_str().unwrap(), &MapeoGrupos::default())
             .expect("la importación debe leer el archivo de prueba");
         let _ = std::fs::remove_file(&ruta);
 
@@ -947,6 +1122,61 @@ mod pruebas_importacion {
                 .iter()
                 .map(|s| s.alumnos)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn el_mapeo_por_defecto_conserva_los_sinonimos_historicos() {
+        let mapeo = MapeoGrupos::default();
+
+        assert!(mapeo.codigo.contains(&"clave".to_string()));
+        assert!(mapeo.asignatura.contains(&"materia".to_string()));
+        assert!(mapeo.secciones.contains(&"seccion".to_string()));
+        assert!(mapeo.alumnos.contains(&"alumnos x seccion".to_string()));
+    }
+
+    #[test]
+    fn reconoce_columnas_con_sinonimos_personalizados() {
+        let mut mapeo = MapeoGrupos::default();
+        mapeo.codigo = vec!["clave".to_string()];
+        mapeo.asignatura = vec!["modulo".to_string()];
+        mapeo.secciones = vec!["n secciones".to_string()];
+        mapeo.alumnos = vec!["estudiantes".to_string()];
+        let mapeo = mapeo.normalizado();
+
+        let filas = vec![vec![
+            "Clave".to_string(),
+            "Módulo".to_string(),
+            "N Secciones".to_string(),
+            "Estudiantes".to_string(),
+        ]];
+
+        let columnas = detectar_columnas_importacion(&filas, &mapeo)
+            .expect("debe reconocer los sinónimos personalizados");
+
+        assert_eq!(
+            (
+                columnas.codigo,
+                columnas.asignatura,
+                columnas.secciones,
+                columnas.alumnos
+            ),
+            (0, 1, 2, 3)
+        );
+    }
+
+    #[test]
+    fn un_mapeo_sin_sinonimos_devuelve_error_claro() {
+        let mut mapeo = MapeoGrupos::default();
+        mapeo.alumnos.clear();
+
+        let error = importar_grupos_desde_ruta("archivo-inexistente.xlsx", &mapeo)
+            .expect_err("debe validar el mapeo antes de abrir el archivo");
+
+        assert!(error.contains("Alumnos"), "error inesperado: {error}");
+        assert!(
+            error.contains("Mapeo de Grupos"),
+            "error inesperado: {error}"
         );
     }
 }

@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Test vinculación de hojas</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<script>
+    window.__testErrors = [];
+    window.__results = [];
+    window.__guardadosVinculaciones = [];
+    window.__legacyDescartado = 0;
+    window.__respuestaDialogo = true;
+    window.__dialogos = [];
+
+    window.addEventListener('error', evento => {
+        window.__testErrors.push('error: ' + (evento.message || evento.error));
+    });
+    window.addEventListener('unhandledrejection', evento => {
+        window.__testErrors.push('rejection: ' + ((evento.reason && (evento.reason.stack || evento.reason.message)) || evento.reason));
+    });
+
+    window.alert = () => {};
+    window.confirm = () => true;
+    window.print = () => {};
+
+    const ARCHIVO = 'C:\\datos\\Menu.xlsx';
+    const HOJAS = ['Entradas', 'Postres'];
+    const ARCHIVO_BEBIDAS = 'C:\\datos\\Bebidas.xlsx';
+    const HOJAS_BEBIDAS = ['Bebidas Frías', 'Bebidas Calientes'];
+
+    const hojasPorRuta = {
+        [ARCHIVO]: HOJAS,
+        [ARCHIVO_BEBIDAS]: HOJAS_BEBIDAS
+    };
+
+    const grupos = [
+        { nombre: 'Entradas', secciones: [{ alumnos: 10, proporcion: 50 }] },
+        { nombre: 'Postres', secciones: [{ alumnos: 10, proporcion: 200 }] }
+    ];
+
+    const ingredientesPorHoja = {
+        Entradas: [{
+            nombre: 'Pan', unidad: 'kg', cantidad: 2,
+            clave: 'pan|kg', clave_ingrediente: 'pan',
+            opciones_codigo: [], codigo_seleccionado: ''
+        }],
+        Postres: [{
+            nombre: 'Torta', unidad: 'kg', cantidad: 3,
+            clave: 'torta|kg', clave_ingrediente: 'torta',
+            opciones_codigo: [], codigo_seleccionado: ''
+        }]
+    };
+
+    // Arranca con la estructura antigua archivo → grupo para probar la migración.
+    let vinculaciones = {
+        hojas: {},
+        legacyArchivos: { [ARCHIVO]: ['Entradas'] }
+    };
+
+    window.__TAURI__ = {
+        core: {
+            invoke: async (cmd, args) => {
+                switch (cmd) {
+                    case 'obtener_archivos_recientes': return [{ ruta: ARCHIVO }, { ruta: ARCHIVO_BEBIDAS }];
+                    case 'obtener_hojas_excel': return (hojasPorRuta[args.ruta] || []).slice();
+                    case 'obtener_grupos_guardados': return grupos.map(g => ({ ...g }));
+                    case 'obtener_grupos_por_pagina': return 10;
+                    case 'obtener_vista_compacta': return false;
+                    case 'obtener_auto_procesar': return false;
+                    case 'obtener_colores_filas': return {};
+                    case 'obtener_version_colores_filas': return 0;
+                    case 'obtener_vinculaciones': return JSON.parse(JSON.stringify(vinculaciones));
+                    case 'guardar_vinculaciones':
+                        window.__guardadosVinculaciones.push(JSON.parse(JSON.stringify(args.vinculaciones)));
+                        vinculaciones = { hojas: args.vinculaciones, legacyArchivos: {} };
+                        return null;
+                    case 'descartar_vinculaciones_legacy':
+                        window.__legacyDescartado++;
+                        vinculaciones.legacyArchivos = {};
+                        return null;
+                    case 'obtener_ruta_diccionario': return null;
+                    case 'obtener_ajustes_procesamiento':
+                        return {
+                            delayAutoprocesadoMs: 10,
+                            tema: 'claro',
+                            formatoNumeros: 'punto',
+                            incluirColoresExportacion: true,
+                            columnasExportacion: ['ingrediente', 'codigo', 'unidad', 'cantidad', 'total', 'comentarios'],
+                            ingredientesNoEncontrados: 'omitir'
+                        };
+                    case 'obtener_mapeo_insumos':
+                        return {
+                            sinonimosIngrediente: ['ingrediente'],
+                            sinonimosUnidad: ['unidad'],
+                            sinonimosCantidad: ['cantidad'],
+                            sinonimosTotal: ['total'],
+                            palabrasFilaIgnorada: [],
+                            unidades: [],
+                            filasCabeceraIgnoradas: 0,
+                            filasEscaneoCabecera: 15
+                        };
+                    case 'obtener_mapeo_grupos':
+                        return {
+                            codigo: ['codigo'],
+                            asignatura: ['asignatura'],
+                            secciones: ['secciones'],
+                            alumnos: ['alumnos']
+                        };
+                    case 'procesar_hojas_excel': {
+                        const hojasPedidas = args.nombresHojas || HOJAS;
+                        const detalleHojas = hojasPedidas
+                            .filter(hoja => ingredientesPorHoja[hoja])
+                            .map(hoja => ({
+                                nombre: hoja,
+                                ingredientes: ingredientesPorHoja[hoja].map(item => ({ ...item })),
+                                filasValidas: ingredientesPorHoja[hoja].length
+                            }));
+
+                        const ingredientes = [];
+                        detalleHojas.forEach(detalle => ingredientes.push(...detalle.ingredientes));
+
+                        return {
+                            ingredientes,
+                            advertencias: [],
+                            hojasProcesadas: detalleHojas.length,
+                            detalleHojas
+                        };
+                    }
+                    case 'consolidar_entre_archivos':
+                        return args.ingredientes.map(item => ({ ...item }));
+                    case 'auto_ajustar_proporciones':
+                        return args.secciones;
+                    case 'calcular_total': {
+                        // Mismo significado que la proporción total del grupo:
+                        // 50 % deja la cantidad a la mitad, 200 % la duplica.
+                        const factor = args.secciones
+                            .reduce((total, seccion) => total + (Number(seccion.proporcion) || 0), 0) / 100;
+                        return args.ingredientes.map(item => ({
+                            ...item,
+                            cantidad_total: (Number(item.cantidad) || 0) * factor
+                        }));
+                    }
+                    default:
+                        return null;
+                }
+            }
+        },
+        dialog: {
+            open: async () => null,
+            save: async () => null,
+            message: async () => null,
+            ask: async (mensaje, opciones) => {
+                window.__dialogos.push({ mensaje, opciones });
+                return window.__respuestaDialogo;
+            }
+        },
+        window: {
+            getCurrentWindow: () => ({
+                onCloseRequested: async () => {},
+                destroy: async () => {}
+            })
+        }
+    };
+</script>
+<script type="module">
+    const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const resultados = [];
+
+    function assert(condicion, mensaje) {
+        if (!condicion) throw new Error(mensaje);
+    }
+
+    async function test(nombre, fn) {
+        try {
+            await fn();
+            resultados.push({ nombre, ok: true });
+        } catch (error) {
+            resultados.push({ nombre, ok: false, error: String(error), stack: error && error.stack });
+        }
+    }
+
+    function click(id) {
+        const elemento = document.getElementById(id);
+        assert(elemento, `No existe #${id}`);
+        elemento.click();
+    }
+
+    function hojaDe(nombre) {
+        return Array.from(document.querySelectorAll('#fileList .sheet-item'))
+            .find(item => item.querySelector('.sheet-name')?.textContent === nombre) || null;
+    }
+
+    function seccionesHoja(nombre) {
+        const item = hojaDe(nombre);
+        assert(item, `No existe la fila de la hoja ${nombre}`);
+        return item.querySelector('.sheet-sections-count')?.textContent || '';
+    }
+
+    function detallesArchivo(ruta) {
+        return Array.from(document.querySelectorAll('#fileList .excel-file-details'))
+            .find(detalle => detalle.dataset.ruta === ruta) || null;
+    }
+
+    function modalAbierto() {
+        return document.getElementById('modalVincularArchivos');
+    }
+
+    function archivoEnModal(nombre) {
+        return Array.from(document.querySelectorAll('#vincularListaHojas .link-file-group'))
+            .find(grupo => grupo.querySelector('.link-file-name')?.textContent === nombre) || null;
+    }
+
+    function expandirArchivoEnModal(nombre) {
+        const grupo = archivoEnModal(nombre);
+        assert(grupo, `No existe el archivo ${nombre} en el modal`);
+        const boton = grupo.querySelector('.link-file-toggle');
+        if (boton.getAttribute('aria-expanded') !== 'true') boton.click();
+        return grupo;
+    }
+
+    function botonHojaEnModal(nombre) {
+        return Array.from(document.querySelectorAll('#vincularListaHojas .link-sheet-row'))
+            .find(boton => boton.querySelector('.sheet-name')?.textContent === nombre) || null;
+    }
+
+    async function seleccionarHojaEnModal(nombre, archivo) {
+        expandirArchivoEnModal(archivo);
+        const boton = botonHojaEnModal(nombre);
+        assert(boton, `No existe la hoja ${nombre} en el modal`);
+        boton.click();
+        await esperar(80);
+        assert(boton.classList.contains('active'),
+            `la hoja ${nombre} no quedó marcada como seleccionada`);
+    }
+
+    function botonGrupoEnModal(nombre) {
+        return Array.from(document.querySelectorAll('#vincularListaGrupos .link-group-row'))
+            .find(boton => boton.querySelector('.link-group-name')?.textContent === nombre) || null;
+    }
+
+    async function abrirModalDesdeToolbar() {
+        assert(!modalAbierto(), 'el modal ya estaba abierto');
+        click('btnVincular');
+        await esperar(400);
+        assert(modalAbierto(), 'el modal de vinculación no se abrió');
+    }
+
+    async function cerrarModal() {
+        const boton = modalAbierto()?.querySelector('.link-modal-footer .btn-secondary')
+            || document.querySelector('.colors-modal-close');
+        assert(boton, 'no hay botón para cerrar el modal');
+        boton.click();
+        await esperar(120);
+        assert(!modalAbierto(), 'el modal no se cerró');
+    }
+
+    function ultimoGuardado() {
+        return window.__guardadosVinculaciones[window.__guardadosVinculaciones.length - 1] || null;
+    }
+
+    function totalDe(nombreIngrediente) {
+        const filas = Array.from(document.querySelectorAll('#tablaConsolidadaBody tr[data-id-fila]'));
+        const fila = filas.find(f => (f.children[0]?.innerText || '').trim() === nombreIngrediente);
+        assert(fila, `No existe la fila de ${nombreIngrediente}`);
+        return fila.querySelector('.input-cantidad-total')?.value || '';
+    }
+
+    async function correr() {
+        const html = await fetch('index.html').then(respuesta => respuesta.text());
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        document.body.innerHTML = doc.body.innerHTML;
+
+        await import('./main.js');
+        document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true }));
+        await esperar(900);
+
+        document.querySelector('#fileList .excel-file-details summary').click();
+        await esperar(500);
+
+        await test('La estructura antigua se migra a todas las hojas del archivo', async () => {
+            assert(window.__legacyDescartado >= 1, 'no se descartó la estructura antigua');
+            assert(seccionesHoja('Entradas') === '1',
+                `Entradas debería heredar el grupo antiguo (${seccionesHoja('Entradas')})`);
+            assert(seccionesHoja('Postres') === '1',
+                `Postres debería heredar el grupo antiguo (${seccionesHoja('Postres')})`);
+
+            const guardado = ultimoGuardado();
+            assert(guardado && guardado['C:\\datos\\Menu.xlsx'],
+                'la migración no persistió el mapa por hoja');
+            const hojas = guardado['C:\\datos\\Menu.xlsx'];
+            assert(hojas.Entradas?.[0] === 'Entradas', 'la hoja Entradas no se guardó');
+            assert(hojas.Postres?.[0] === 'Entradas', 'la hoja Postres no se guardó');
+        });
+
+        await test('Las hojas no muestran el nombre del grupo, solo el contador', async () => {
+            const item = hojaDe('Postres');
+            assert(item, 'no existe la fila de la hoja Postres');
+
+            assert(!item.querySelector('.sheet-link-state'),
+                'la fila todavía tiene un nodo de nombre de grupo');
+
+            const hijos = Array.from(item.querySelector('.sheet-item-label').children)
+                .map(nodo => nodo.className);
+            assert(JSON.stringify(hijos) === JSON.stringify([
+                'sheet-sections-count', 'chk-sheet', 'sheet-name'
+            ]), `hijos inesperados en la fila: ${hijos.join(', ')}`);
+
+            // El grupo "Entradas" no aparece como texto en la fila de Postres.
+            assert(!item.textContent.includes('Entradas'),
+                `la fila muestra el nombre del grupo: "${item.textContent}"`);
+            assert(seccionesHoja('Postres') === '1',
+                `el contador de secciones debería seguir visible (${seccionesHoja('Postres')})`);
+        });
+
+        await test('La fila del archivo muestra solo nombre y flecha', async () => {
+            const menu = detallesArchivo(ARCHIVO);
+            assert(menu, 'no existe la fila del archivo Menu');
+
+            const fila = menu.querySelector('.excel-file-summary');
+            assert(fila, 'falta el summary del archivo');
+            assert(!fila.querySelector('.file-link-summary'),
+                'la fila todavía renderiza el contador de hojas');
+            assert(!fila.textContent.includes('hojas vinculadas'),
+                `la fila todavía muestra un contador: "${fila.textContent}"`);
+            assert(fila.querySelector('.file-name')?.textContent === 'Menu',
+                'la fila no muestra el nombre del archivo');
+            assert(fila.querySelector('.chevron'),
+                'la fila perdió la flecha del acordeón');
+        });
+
+        await test('Las hojas sin grupo muestran solo el contador atenuado', async () => {
+            const bebidas = detallesArchivo(ARCHIVO_BEBIDAS);
+            assert(bebidas, 'no existe la fila del archivo Bebidas');
+
+            if (!bebidas.open) {
+                bebidas.querySelector('summary').click();
+                await esperar(300);
+            }
+
+            HOJAS_BEBIDAS.forEach(nombre => {
+                const item = hojaDe(nombre);
+                assert(item, `no existe la hoja ${nombre}`);
+                assert(!item.querySelector('.sheet-link-state'),
+                    `${nombre} todavía tiene un nodo de nombre de grupo`);
+                assert(seccionesHoja(nombre) === '—',
+                    `${nombre} debería mostrar el multiplicador vacío (${seccionesHoja(nombre)})`);
+            });
+        });
+
+        await test('El modal agrupa las hojas en un acordeón por archivo', async () => {
+            await abrirModalDesdeToolbar();
+
+            const archivos = Array.from(
+                document.querySelectorAll('#vincularListaHojas .link-file-group')
+            );
+            assert(archivos.length === 2,
+                `esperaba 2 archivos, hay ${archivos.length}`);
+
+            // El modal ordena por nombre de archivo (los ítems llegan ordenados).
+            const nombres = archivos.map(grupo =>
+                grupo.querySelector('.link-file-name')?.textContent
+            );
+            assert(JSON.stringify(nombres) === JSON.stringify(['Bebidas', 'Menu']),
+                `archivos inesperados: ${nombres.join(', ')}`);
+
+            const menu = archivoEnModal('Menu');
+            const bebidas = archivoEnModal('Bebidas');
+            assert(menu && bebidas, 'faltan archivos en el acordeón');
+
+            const hojasDe = grupo => Array.from(grupo.querySelectorAll('.link-sheet-row'))
+                .map(boton => boton.querySelector('.sheet-name')?.textContent);
+
+            assert(JSON.stringify(hojasDe(menu)) === JSON.stringify(['Entradas', 'Postres']),
+                `hojas de Menu inesperadas: ${hojasDe(menu).join(', ')}`);
+            assert(JSON.stringify(hojasDe(bebidas)) === JSON.stringify(['Bebidas Calientes', 'Bebidas Frías']),
+                `hojas de Bebidas inesperadas: ${hojasDe(bebidas).join(', ')}`);
+
+            // Cada padre tiene chevron, estado ARIA y su propia lista de hojas.
+            archivos.forEach(grupo => {
+                const boton = grupo.querySelector('.link-file-toggle');
+                assert(boton?.querySelector('.link-file-chevron'),
+                    'el archivo padre no tiene indicador de expansión');
+
+                const lista = grupo.querySelector('.link-file-sheets');
+                assert(lista, 'el archivo padre no contiene la lista de hojas');
+                assert(lista.classList.contains('sheets-list'),
+                    'la lista de hojas no reutiliza el estilo del panel');
+                assert(boton.getAttribute('aria-controls') === lista.id,
+                    'aria-controls no apunta a la lista de hojas');
+                assert(lista.querySelectorAll('.link-sheet-row').length > 0,
+                    'la lista de hojas está vacía');
+            });
+
+            await cerrarModal();
+        });
+
+        await test('El acordeón arranca abierto en el archivo de la hoja preseleccionada', async () => {
+            await abrirModalDesdeToolbar();
+
+            const menu = archivoEnModal('Menu');
+            const bebidas = archivoEnModal('Bebidas');
+
+            assert(menu.querySelector('.link-file-toggle').getAttribute('aria-expanded') === 'true',
+                'Menu debería estar expandido al abrir');
+            assert(!menu.querySelector('.link-file-sheets').hidden,
+                'las hojas de Menu deberían estar visibles');
+            assert(menu.querySelector('.link-file-toggle').classList.contains('expanded'),
+                'el chevron de Menu debería indicar expansión');
+
+            assert(bebidas.querySelector('.link-file-toggle').getAttribute('aria-expanded') === 'false',
+                'Bebidas debería estar colapsado al abrir');
+            assert(bebidas.querySelector('.link-file-sheets').hidden,
+                'las hojas de Bebidas no deberían verse colapsadas');
+
+            await cerrarModal();
+        });
+
+        await test('El archivo padre solo expande/colapsa y no cambia la hoja seleccionada', async () => {
+            await abrirModalDesdeToolbar();
+
+            const seleccionada = document.querySelector('#vincularListaHojas .link-sheet-row.active');
+            assert(seleccionada?.querySelector('.sheet-name')?.textContent === 'Entradas',
+                'la hoja preseleccionada debería ser Entradas');
+
+            const bebidas = archivoEnModal('Bebidas');
+            const parent = bebidas.querySelector('.link-file-toggle');
+            const guardadosAntes = window.__guardadosVinculaciones.length;
+
+            parent.click();
+            await esperar(80);
+
+            assert(parent.getAttribute('aria-expanded') === 'true',
+                'el archivo Bebidas no se expandió');
+            assert(!bebidas.querySelector('.link-file-sheets').hidden,
+                'las hojas de Bebidas siguen ocultas tras expandir');
+            assert(!parent.classList.contains('active'),
+                'el padre se marcó como hoja seleccionada');
+            assert(document.querySelector('#vincularListaHojas .link-sheet-row.active') === seleccionada,
+                'expandir el padre cambió la hoja seleccionada');
+            assert(window.__guardadosVinculaciones.length === guardadosAntes,
+                'expandir el padre persistió una vinculación');
+
+            parent.click();
+            await esperar(80);
+
+            assert(parent.getAttribute('aria-expanded') === 'false',
+                'el archivo Bebidas no se colapsó');
+            assert(bebidas.querySelector('.link-file-sheets').hidden,
+                'las hojas de Bebidas siguen visibles tras colapsar');
+            assert(window.__guardadosVinculaciones.length === guardadosAntes,
+                'colapsar el padre persistió una vinculación');
+
+            await cerrarModal();
+        });
+
+        await test('La búsqueda filtra el acordeón y expande las coincidencias', async () => {
+            await abrirModalDesdeToolbar();
+
+            const buscador = document.getElementById('vincularBuscarHojas');
+            assert(buscador, 'no existe el buscador del modal');
+
+            const escribir = async valor => {
+                buscador.value = valor;
+                buscador.dispatchEvent(new Event('input', { bubbles: true }));
+                await esperar(60);
+            };
+
+            const hojasVisibles = grupo => Array.from(grupo.querySelectorAll('.link-sheet-item'))
+                .filter(li => !li.hidden)
+                .map(li => li.querySelector('.sheet-name')?.textContent);
+
+            const menu = archivoEnModal('Menu');
+            const bebidas = archivoEnModal('Bebidas');
+
+            // Sin acentos: la comparación normaliza ("frias" → "Bebidas Frías").
+            await escribir('frias');
+
+            assert(!bebidas.hidden, 'Bebidas debería seguir visible');
+            assert(menu.hidden, 'Menu no tiene coincidencias y debería ocultarse');
+            assert(bebidas.querySelector('.link-file-toggle').getAttribute('aria-expanded') === 'true',
+                'el archivo con coincidencias debería expandirse solo');
+            assert(JSON.stringify(hojasVisibles(bebidas)) === JSON.stringify(['Bebidas Frías']),
+                `hojas visibles inesperadas: ${hojasVisibles(bebidas).join(', ')}`);
+
+            // Si coincide el nombre del archivo, se muestran todas sus hojas.
+            await escribir('bebidas');
+            assert(hojasVisibles(bebidas).length === 2,
+                `esperaba 2 hojas de Bebidas visibles, hay ${hojasVisibles(bebidas).length}`);
+
+            await escribir('zzz');
+            assert(menu.hidden && bebidas.hidden,
+                'sin coincidencias no debería quedar ningún archivo');
+            const estado = document.querySelector('.link-search-status')?.textContent || '';
+            assert(estado.includes('Ninguna hoja'),
+                `estado de búsqueda inesperado: "${estado}"`);
+
+            // Al limpiar se restaura el estado manual (Menu abierto, Bebidas cerrado).
+            await escribir('');
+            assert(!menu.hidden && !bebidas.hidden,
+                'al limpiar deberían volver todos los archivos');
+            assert(menu.querySelector('.link-file-toggle').getAttribute('aria-expanded') === 'true',
+                'Menu debería volver expandido');
+            assert(bebidas.querySelector('.link-file-toggle').getAttribute('aria-expanded') === 'false',
+                'Bebidas debería volver colapsado');
+            assert(document.querySelector('.link-search-status')?.textContent === '',
+                'el estado de búsqueda debería limpiarse');
+
+            await cerrarModal();
+        });
+
+        await test('La hoja seleccionada se marca y se vincula con su hojaId', async () => {
+            await abrirModalDesdeToolbar();
+
+            await seleccionarHojaEnModal('Bebidas Frías', 'Bebidas');
+
+            assert(document.querySelector('#vincularItemActual .link-current-item-label')?.textContent === 'Bebidas Frías',
+                'la tarjeta central no muestra la hoja seleccionada');
+            assert(!botonHojaEnModal('Entradas').classList.contains('active'),
+                'la selección anterior no se limpió');
+
+            const menuAntes = JSON.stringify(ultimoGuardado()?.[ARCHIVO] || null);
+
+            const grupoPostres = botonGrupoEnModal('Postres');
+            assert(grupoPostres, 'no se encontró el grupo Postres');
+            grupoPostres.click();
+            await esperar(250);
+
+            let guardado = ultimoGuardado();
+            assert(JSON.stringify(guardado[ARCHIVO]) === menuAntes,
+                `Menu se alteró al vincular Bebidas: ${JSON.stringify(guardado[ARCHIVO])}`);
+            assert(JSON.stringify(guardado[ARCHIVO_BEBIDAS]) === JSON.stringify({ 'Bebidas Frías': ['Postres'] }),
+                `Bebidas guardó: ${JSON.stringify(guardado[ARCHIVO_BEBIDAS])}`);
+
+            // Deshace el vínculo para no contaminar las pruebas siguientes.
+            grupoPostres.click();
+            await esperar(250);
+            guardado = ultimoGuardado();
+            assert(!guardado[ARCHIVO_BEBIDAS],
+                `Bebidas quedó con vínculos: ${JSON.stringify(guardado[ARCHIVO_BEBIDAS])}`);
+
+            await cerrarModal();
+        });
+
+        await test('Vincular una hoja no altera a sus hojas hermanas', async () => {
+            await abrirModalDesdeToolbar();
+
+            await seleccionarHojaEnModal('Postres', 'Menu');
+
+            const botonGrupo = botonGrupoEnModal('Postres');
+            assert(botonGrupo, 'no se encontró el grupo Postres');
+            botonGrupo.click();
+            await esperar(250);
+
+            await cerrarModal();
+
+            assert(seccionesHoja('Postres') === '2',
+                `Postres debería sumar 2 secciones (${seccionesHoja('Postres')})`);
+            assert(seccionesHoja('Entradas') === '1',
+                `Entradas cambió sin motivo (${seccionesHoja('Entradas')})`);
+            assert(!document.querySelector('#fileList .file-link-summary'),
+                'la fila del archivo volvió a mostrar el contador');
+
+            const guardado = ultimoGuardado();
+            const hojas = guardado['C:\\datos\\Menu.xlsx'];
+            assert(JSON.stringify(hojas.Postres.sort()) === JSON.stringify(['Entradas', 'Postres']),
+                `Postres guardó: ${hojas.Postres.join(', ')}`);
+            assert(JSON.stringify(hojas.Entradas) === JSON.stringify(['Entradas']),
+                `Entradas se contaminó: ${hojas.Entradas.join(', ')}`);
+        });
+
+        await test('Quitar el grupo de una hoja deja intacto el archivo', async () => {
+            await abrirModalDesdeToolbar();
+
+            await seleccionarHojaEnModal('Entradas', 'Menu');
+
+            const botonGrupo = botonGrupoEnModal('Entradas');
+            assert(botonGrupo, 'no se encontró el grupo Entradas');
+            botonGrupo.click();
+            await esperar(250);
+
+            await cerrarModal();
+
+            const itemEntradas = hojaDe('Entradas');
+            assert(itemEntradas, 'no existe la fila de la hoja Entradas');
+            assert(seccionesHoja('Entradas') === '—',
+                `Entradas debería quedar sin secciones (${seccionesHoja('Entradas')})`);
+            assert(!hojaDe('Entradas').querySelector('.sheet-link-state'),
+                'la fila de Entradas todavía tiene un nodo de grupo');
+            assert(seccionesHoja('Postres') === '2',
+                `Postres se alteró al desvincular Entradas (${seccionesHoja('Postres')})`);
+            assert(!document.querySelector('#fileList .file-link-summary'),
+                'la fila muestra un contador que debería estar oculto');
+
+            const guardado = ultimoGuardado();
+            const hojas = guardado['C:\\datos\\Menu.xlsx'];
+            assert(!hojas.Entradas, 'la hoja Entradas quedó guardada sin grupos');
+        });
+
+        await test('Auto-vincular compara el nombre de la hoja y despliega el resultado', async () => {
+            await abrirModalDesdeToolbar();
+
+            // Se colapsa el archivo para comprobar que auto-vincular lo abre de
+            // nuevo al encontrar coincidencias dentro de él.
+            const menu = archivoEnModal('Menu');
+            const parentMenu = menu.querySelector('.link-file-toggle');
+            if (parentMenu.getAttribute('aria-expanded') === 'true') parentMenu.click();
+            await esperar(60);
+            assert(parentMenu.getAttribute('aria-expanded') === 'false',
+                'no se pudo colapsar Menu antes de auto-vincular');
+
+            const umbral = document.getElementById('vincularUmbralSimilitud');
+            assert(umbral, 'no existe el umbral de similitud');
+            umbral.value = '100';
+
+            const btnAuto = document.querySelector('.btn-auto-vincular');
+            assert(btnAuto, 'no existe el botón de auto-vincular');
+            btnAuto.click();
+            await esperar(300);
+
+            const estadoAuto = document.querySelector('.link-autolink-status')?.textContent || '';
+            assert(estadoAuto.includes('1 vinculación'),
+                `estado inesperado de auto-vincular: "${estadoAuto}"`);
+
+            assert(parentMenu.getAttribute('aria-expanded') === 'true',
+                'auto-vincular debería desplegar el archivo con vínculos nuevos');
+            assert(!menu.querySelector('.link-file-sheets').hidden,
+                'las hojas del archivo auto-vinculado siguen ocultas');
+
+            await cerrarModal();
+
+            assert(seccionesHoja('Entradas') === '1',
+                `Entradas debería re-vincularse por su nombre (${seccionesHoja('Entradas')})`);
+
+            const guardado = ultimoGuardado();
+            const hojas = guardado['C:\\datos\\Menu.xlsx'];
+            assert(JSON.stringify(hojas.Entradas) === JSON.stringify(['Entradas']),
+                `Entradas quedó con grupos: ${hojas.Entradas.join(', ')}`);
+        });
+
+        await test('El cálculo vinculado usa el grupo de cada hoja', async () => {
+            // Deja una hoja por grupo: Entradas → Entradas y Postres → Postres.
+            await abrirModalDesdeToolbar();
+            await seleccionarHojaEnModal('Postres', 'Menu');
+
+            const grupoEntradas = botonGrupoEnModal('Entradas');
+            assert(grupoEntradas, 'no se encontró el grupo Entradas');
+            assert(grupoEntradas.classList.contains('active'),
+                'Postres debería seguir vinculada a Entradas antes de desvincular');
+            grupoEntradas.click();
+            await esperar(250);
+            await cerrarModal();
+
+            assert(seccionesHoja('Postres') === '1',
+                `Postres debería quedar solo con su grupo (${seccionesHoja('Postres')})`);
+
+            const detalles = document.querySelector('#fileList .excel-file-details');
+            detalles.querySelectorAll('.chk-sheet').forEach(chk => chk.click());
+            await esperar(200);
+
+            click('btnProcesarSeleccionadas');
+            await esperar(900);
+
+            click('btnCalcularVinculados');
+            await esperar(600);
+
+            // Entradas: Pan 2 kg × 0,5 = 1. Postres: Torta 3 kg × 2 = 6.
+            // Si se usara el vínculo del archivo, ambas filas se multiplicarían
+            // por los mismos grupos y el resultado sería distinto.
+            const totalPan = Number(totalDe('Pan'));
+            const totalTorta = Number(totalDe('Torta'));
+
+            assert(totalPan === 1,
+                `total de Pan inesperado: "${totalDe('Pan')}" (esperaba 1)`);
+            assert(totalTorta === 6,
+                `total de Torta inesperado: "${totalDe('Torta')}" (esperaba 6)`);
+        });
+
+        await test('Desvincular todos pide confirmación y respeta la cancelación', async () => {
+            await abrirModalDesdeToolbar();
+
+            const btn = document.getElementById('btnDesvincularTodo');
+            assert(btn, 'no existe el botón Desvincular todos');
+            assert(!btn.disabled, 'con vínculos el botón debería estar habilitado');
+            assert(btn.classList.contains('link-danger-btn'),
+                'el botón no usa el estilo destructivo del modal');
+
+            const guardadosAntes = window.__guardadosVinculaciones.length;
+            const dialogosAntes = window.__dialogos.length;
+
+            window.__respuestaDialogo = false;
+            btn.click();
+            await esperar(200);
+
+            assert(window.__dialogos.length === dialogosAntes + 1,
+                'no se pidió confirmación antes de desvincular');
+            const mensaje = window.__dialogos[window.__dialogos.length - 1].mensaje;
+            assert(mensaje.includes('desvincular todas las hojas'),
+                `mensaje de confirmación inesperado: "${mensaje}"`);
+            assert(mensaje.includes('no se puede deshacer'),
+                'la confirmación no advierte que es irreversible');
+
+            assert(window.__guardadosVinculaciones.length === guardadosAntes,
+                'cancelar no debe persistir cambios');
+            assert(seccionesHoja('Entradas') === '1',
+                'cancelar no debe tocar el estado de las hojas');
+            assert(!btn.disabled, 'tras cancelar el botón sigue habilitado');
+
+            window.__respuestaDialogo = true;
+            await cerrarModal();
+        });
+
+        await test('Desvincular todos limpia estado, UI y persiste el mapa vacío', async () => {
+            await abrirModalDesdeToolbar();
+
+            const btn = document.getElementById('btnDesvincularTodo');
+            const guardadosAntes = window.__guardadosVinculaciones.length;
+
+            btn.click();
+            await esperar(300);
+
+            assert(window.__guardadosVinculaciones.length === guardadosAntes + 1,
+                'no se persistió la limpieza');
+            const guardado = ultimoGuardado();
+            assert(JSON.stringify(guardado) === '{}',
+                `se esperaba un mapa vacío y llegó: ${JSON.stringify(guardado)}`);
+
+            // Panel izquierdo: sin grupos, solo el contador atenuado.
+            ['Entradas', 'Postres'].forEach(nombre => {
+                assert(seccionesHoja(nombre) === '—',
+                    `${nombre} debería quedar sin secciones (${seccionesHoja(nombre)})`);
+                assert(!hojaDe(nombre).querySelector('.sheet-link-state'),
+                    `${nombre} todavía tiene un nodo de grupo`);
+            });
+            assert(!document.querySelector('#fileList .file-link-summary'),
+                'la fila del archivo muestra un contador que debería estar oculto');
+
+            // Modal: badges, contadores y grupos sin marcar.
+            const badges = Array.from(
+                document.querySelectorAll('#vincularListaHojas .link-file-linked')
+            ).map(nodo => nodo.textContent);
+            assert(JSON.stringify(badges) === JSON.stringify(['0/2', '0/2']),
+                `badges inesperados: ${badges.join(', ')}`);
+
+            const contadores = Array.from(
+                document.querySelectorAll('#vincularListaHojas .colors-picker-count')
+            ).map(nodo => nodo.textContent);
+            assert(contadores.every(texto => texto === '0'),
+                `contadores inesperados: ${contadores.join(', ')}`);
+
+            assert(!document.querySelector('#vincularListaHojas .link-sheet-row.active'),
+                'quedó una hoja marcada como seleccionada');
+            assert(!document.querySelector('#vincularListaGrupos .link-group-row.active'),
+                'quedó un grupo marcado como vinculado');
+
+            const vacio = document.querySelector('#vincularListaGrupos .colors-picker-empty');
+            assert(vacio?.textContent.includes('Selecciona una hoja'),
+                `el modal no muestra el estado vacío: "${vacio?.textContent}"`);
+
+            const estado = document.getElementById('vincularEstadoLimpieza');
+            assert(estado?.textContent.includes('eliminadas'),
+                `falta el aviso de éxito: "${estado?.textContent}"`);
+
+            assert(btn.disabled, 'sin vínculos el botón debe quedar deshabilitado');
+            assert(btn.textContent === 'Desvincular todos',
+                `el botón no restauró su texto: "${btn.textContent}"`);
+
+            await cerrarModal();
+        });
+
+        await test('Sin vinculaciones, Desvincular todos no pide confirmación', async () => {
+            await abrirModalDesdeToolbar();
+
+            const btn = document.getElementById('btnDesvincularTodo');
+            assert(btn.disabled, 'el botón debería estar deshabilitado');
+            assert(btn.title.includes('No hay vinculaciones'),
+                `tooltip inesperado: "${btn.title}"`);
+
+            const dialogosAntes = window.__dialogos.length;
+            btn.click();
+            await esperar(150);
+            assert(window.__dialogos.length === dialogosAntes,
+                'no debería pedir confirmación sin vínculos');
+
+            await cerrarModal();
+        });
+
+        await test('Vincular de nuevo vuelve a habilitar Desvincular todos', async () => {
+            await abrirModalDesdeToolbar();
+
+            const btn = document.getElementById('btnDesvincularTodo');
+            assert(btn.disabled, 'el botón debería empezar deshabilitado');
+
+            await seleccionarHojaEnModal('Entradas', 'Menu');
+            const grupo = botonGrupoEnModal('Entradas');
+            assert(grupo, 'no se encontró el grupo Entradas');
+            grupo.click();
+            await esperar(250);
+
+            assert(!btn.disabled,
+                'vincular una hoja debería habilitar Desvincular todos');
+
+            await cerrarModal();
+        });
+
+        const pre = document.createElement('pre');
+        pre.id = 'resultado';
+        pre.textContent = JSON.stringify({
+            resultados,
+            erroresGlobales: window.__testErrors
+        });
+        document.body.appendChild(pre);
+    }
+
+    correr().catch(error => {
+        const pre = document.createElement('pre');
+        pre.id = 'resultado';
+        pre.textContent = JSON.stringify({
+            fatal: String(error),
+            stack: error && error.stack,
+            erroresGlobales: window.__testErrors,
+            resultados
+        });
+        document.body.appendChild(pre);
+    });
+</script>
+</body>
+</html>

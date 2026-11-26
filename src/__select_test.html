@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Test selección de filas</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<script>
+    window.__testErrors = [];
+    window.__results = [];
+
+    window.addEventListener('error', evento => {
+        window.__testErrors.push('error: ' + (evento.message || evento.error));
+    });
+    window.addEventListener('unhandledrejection', evento => {
+        window.__testErrors.push('rejection: ' + ((evento.reason && (evento.reason.stack || evento.reason.message)) || evento.reason));
+    });
+
+    window.alert = () => {};
+    window.confirm = () => true;
+    window.print = () => {};
+
+    const archivos = [{ ruta: 'C:\\datos\\Prueba.xlsx' }];
+    const ingredientes = [
+        {
+            nombre: 'Harina', unidad: 'kg', cantidad: 2,
+            clave: 'harina|kg', clave_ingrediente: 'harina',
+            opciones_codigo: [], codigo_seleccionado: ''
+        },
+        {
+            nombre: 'Sal', unidad: 'g', cantidad: 5,
+            clave: 'sal|g', clave_ingrediente: 'sal',
+            opciones_codigo: [], codigo_seleccionado: ''
+        },
+        {
+            nombre: 'Azúcar', unidad: 'kg', cantidad: 3,
+            clave: 'azucar|kg', clave_ingrediente: 'azucar',
+            opciones_codigo: [], codigo_seleccionado: ''
+        },
+        {
+            nombre: 'Aceite', unidad: 'l', cantidad: 1,
+            clave: 'aceite|l', clave_ingrediente: 'aceite',
+            opciones_codigo: [], codigo_seleccionado: ''
+        }
+    ];
+
+    window.__TAURI__ = {
+        core: {
+            invoke: async (cmd, args) => {
+                switch (cmd) {
+                    case 'obtener_archivos_recientes': return archivos;
+                    case 'obtener_hojas_excel': return ['Hoja 1'];
+                    case 'obtener_grupos_guardados': return [];
+                    case 'obtener_grupos_por_pagina': return 10;
+                    case 'obtener_vista_compacta': return false;
+                    case 'obtener_auto_procesar': return true;
+                    case 'obtener_colores_filas': return {};
+                    case 'obtener_version_colores_filas': return 0;
+                    case 'obtener_vinculaciones': return {};
+                    case 'obtener_ruta_diccionario': return null;
+                    case 'obtener_ajustes_procesamiento':
+                        return {
+                            delayAutoprocesadoMs: 10,
+                            tema: 'claro',
+                            formatoNumeros: 'punto',
+                            incluirColoresExportacion: true,
+                            columnasExportacion: ['ingrediente', 'codigo', 'unidad', 'cantidad', 'total', 'comentarios'],
+                            ingredientesNoEncontrados: 'omitir'
+                        };
+                    case 'obtener_mapeo_insumos':
+                        return {
+                            sinonimosIngrediente: ['ingrediente'],
+                            sinonimosUnidad: ['unidad'],
+                            sinonimosCantidad: ['cantidad'],
+                            sinonimosTotal: ['total'],
+                            palabrasFilaIgnorada: [],
+                            unidades: [],
+                            filasCabeceraIgnoradas: 0,
+                            filasEscaneoCabecera: 15
+                        };
+                    case 'obtener_mapeo_grupos':
+                        return {
+                            codigo: ['codigo'],
+                            asignatura: ['asignatura'],
+                            secciones: ['secciones'],
+                            alumnos: ['alumnos']
+                        };
+                    case 'procesar_hojas_excel':
+                        return { ingredientes: ingredientes.map(item => ({ ...item })), advertencias: [] };
+                    case 'consolidar_entre_archivos':
+                        return args.ingredientes.map(item => ({ ...item }));
+                    case 'auto_ajustar_proporciones':
+                        return args.secciones;
+                    case 'calcular_total': {
+                        const factor = args.secciones.reduce((total, seccion) => total + (Number(seccion.proporcion) || 0), 0) / 100;
+                        return args.ingredientes.map(item => ({
+                            ...item,
+                            cantidad_total: (Number(item.cantidad) || 0) * (factor || 1)
+                        }));
+                    }
+                    default:
+                        return null;
+                }
+            }
+        },
+        dialog: {
+            open: async () => null,
+            save: async () => null,
+            message: async () => null,
+            ask: async () => true
+        },
+        window: {
+            getCurrentWindow: () => ({
+                onCloseRequested: async () => {},
+                destroy: async () => {}
+            })
+        }
+    };
+</script>
+<script type="module">
+    const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const resultados = [];
+
+    function assert(condicion, mensaje) {
+        if (!condicion) throw new Error(mensaje);
+    }
+
+    async function test(nombre, fn) {
+        try {
+            await fn();
+            resultados.push({ nombre, ok: true });
+        } catch (error) {
+            resultados.push({ nombre, ok: false, error: String(error), stack: error && error.stack });
+        }
+    }
+
+    function click(id) {
+        const elemento = document.getElementById(id);
+        assert(elemento, `No existe #${id}`);
+        elemento.click();
+    }
+
+    function fila(indice) {
+        const filas = document.querySelectorAll('#tablaConsolidadaBody tr[data-id-fila]');
+        const filaActual = filas[indice];
+        assert(filaActual, `No existe la fila ${indice}`);
+        return filaActual;
+    }
+
+    function celda(indiceFila, columna) {
+        const valor = fila(indiceFila).cells[columna];
+        assert(valor, `No existe la celda ${indiceFila},${columna}`);
+        return valor;
+    }
+
+    function raton(elemento, tipo, opciones = {}) {
+        let clientX = 0;
+        let clientY = 0;
+
+        if (tipo !== 'mouseup' && elemento instanceof Element) {
+            const rect = elemento.getBoundingClientRect();
+            clientX = rect.left + rect.width / 2;
+            clientY = rect.top + rect.height / 2;
+        }
+
+        elemento.dispatchEvent(new MouseEvent(tipo, {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            buttons: tipo === 'mouseup' ? 0 : 1,
+            clientX,
+            clientY,
+            ...opciones
+        }));
+    }
+
+    function filasPintadas() {
+        return document.querySelectorAll('#tablaConsolidadaBody tr.fila-seleccionada');
+    }
+
+    function idsPintados() {
+        return Array.from(filasPintadas()).map(f => f.dataset.idFila);
+    }
+
+    function idsSeleccionados() {
+        return Array.from(window.filasSeleccionadas).sort();
+    }
+
+    function filaPorId(idFila) {
+        return Array.from(document.querySelectorAll('#tablaConsolidadaBody tr[data-id-fila]'))
+            .find(f => f.dataset.idFila === idFila) || null;
+    }
+
+    function abrirMenuColoresEn(elemento) {
+        const rect = elemento.getBoundingClientRect();
+        raton(elemento, 'contextmenu', {
+            button: 2,
+            buttons: 2,
+            clientX: rect.left + Math.min(10, rect.width / 2),
+            clientY: rect.top + Math.min(10, rect.height / 2)
+        });
+    }
+
+    async function correr() {
+        const html = await fetch('index.html').then(respuesta => respuesta.text());
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        document.body.innerHTML = doc.body.innerHTML;
+
+        await import('./main.js');
+        document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true }));
+        await esperar(800);
+
+        // Expandir el archivo y procesar una hoja para tener filas.
+        const detalles = document.querySelector('#fileList .excel-file-details');
+        detalles.querySelector('summary').click();
+        await esperar(500);
+        document.querySelector('#fileList .chk-sheet').click();
+        await esperar(100);
+        click('btnProcesarSeleccionadas');
+        await esperar(700);
+
+        await test('El arrastre pinta filas completas, no celdas sueltas', async () => {
+            raton(celda(0, 0), 'mousedown');
+            await esperar(30);
+
+            assert(filasPintadas().length === 1, 'el mousedown no pintó la fila inicial');
+            assert(document.body.classList.contains('arrastrando-filas'),
+                'no se activó el modo de arrastre');
+            assert(getComputedStyle(document.body).userSelect === 'none',
+                'no se deshabilitó la selección de texto');
+
+            raton(celda(1, 2), 'mousemove');
+            await esperar(250);
+
+            assert(filasPintadas().length === 2,
+                `esperaba 2 filas pintadas, hay ${filasPintadas().length}`);
+            assert(window.filasSeleccionadas.size === 2,
+                `el Set debería tener 2 ids, tiene ${window.filasSeleccionadas.size}`);
+            assert(document.querySelectorAll('#tablaConsolidadaBody td.celda-seleccionada').length === 0,
+                'quedaron celdas pintadas con la clase anterior');
+
+            const fondo = getComputedStyle(filasPintadas()[0].cells[0]).backgroundColor;
+            assert(fondo !== 'rgba(0, 0, 0, 0)' && fondo !== 'transparent',
+                `la fila no tiene fondo de selección (${fondo})`);
+        });
+
+        await test('mouseup fuera de la tabla termina el arrastre sin perder la selección', async () => {
+            raton(document, 'mouseup');
+            await esperar(50);
+
+            assert(!document.body.classList.contains('arrastrando-filas'),
+                'el modo arrastre quedó pegado');
+            assert(filasPintadas().length === 2, 'mouseup borró la selección');
+            assert(window.filasSeleccionadas.size === 2, 'mouseup alteró el Set');
+        });
+
+        await test('Nuevo clic sin Ctrl limpia la selección anterior', async () => {
+            raton(celda(0, 0), 'mousedown');
+            await esperar(30);
+            raton(document, 'mouseup');
+            await esperar(30);
+
+            assert(filasPintadas().length === 1,
+                `esperaba 1 fila, hay ${filasPintadas().length}`);
+            assert(window.filasSeleccionadas.size === 1,
+                `esperaba 1 id, hay ${window.filasSeleccionadas.size}`);
+        });
+
+        await test('Ctrl agrega filas a la selección existente', async () => {
+            raton(celda(1, 1), 'mousedown', { ctrlKey: true });
+            raton(celda(2, 2), 'mousemove', { ctrlKey: true });
+            await esperar(250);
+            raton(document, 'mouseup');
+            await esperar(30);
+
+            assert(filasPintadas().length === 3,
+                `esperaba 3 filas (1 previa + 2 nuevas), hay ${filasPintadas().length}`);
+            assert(window.filasSeleccionadas.size === 3,
+                `esperaba 3 ids, hay ${window.filasSeleccionadas.size}`);
+        });
+
+        await test('Cmd/Meta también agrega filas', async () => {
+            raton(celda(3, 2), 'mousedown', { metaKey: true });
+            await esperar(30);
+            raton(document, 'mouseup');
+            await esperar(30);
+
+            assert(window.filasSeleccionadas.size === 4,
+                `esperaba 4 ids con Meta, hay ${window.filasSeleccionadas.size}`);
+            assert(filasPintadas().length === 4, 'no se pintaron las 4 filas');
+        });
+
+        await test('Retroceder durante el arrastre reduce el rango de filas', async () => {
+            raton(celda(0, 0), 'mousedown');
+            raton(celda(2, 3), 'mousemove');
+            await esperar(250);
+            assert(filasPintadas().length === 3,
+                `esperaba 3 filas, hay ${filasPintadas().length}`);
+
+            raton(celda(1, 1), 'mousemove');
+            await esperar(250);
+            assert(filasPintadas().length === 2,
+                `al retroceder esperaba 2 filas, hay ${filasPintadas().length}`);
+
+            raton(document, 'mouseup');
+            await esperar(30);
+
+            const esperados = [fila(0).dataset.idFila, fila(1).dataset.idFila].sort();
+            assert(JSON.stringify(idsSeleccionados()) === JSON.stringify(esperados),
+                'el Set no quedó con las dos primeras filas tras retroceder');
+        });
+
+        await test('Empezar sobre un input no inicia selección', async () => {
+            const antes = window.filasSeleccionadas.size;
+            const input = document.querySelector('#tablaConsolidadaBody .input-cantidad');
+            assert(input, 'no hay input de cantidad');
+
+            raton(input, 'mousedown');
+            await esperar(30);
+            raton(document, 'mouseup');
+            await esperar(30);
+
+            assert(window.filasSeleccionadas.size === antes,
+                'el clic sobre el input alteró la selección');
+        });
+
+        await test('La edición manual de cantidad sigue funcionando', async () => {
+            const input = document.querySelector('#tablaConsolidadaBody .input-cantidad');
+            input.value = '7';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            await esperar(250);
+
+            assert(input.classList.contains('modificada-manualmente'),
+                'la cantidad editada no se marcó como modificada');
+            assert(input.value === '7', 'la cantidad editada no se conservó');
+        });
+
+        await test('El menú contextual aplica el color a todo el bloque seleccionado', async () => {
+            assert(filasPintadas().length === 2, 'la prueba necesita 2 filas seleccionadas');
+            const idsBloque = idsPintados();
+
+            abrirMenuColoresEn(fila(0));
+            await esperar(50);
+
+            const menu = document.getElementById('menuColores');
+            assert(menu, 'no se abrió el menú de colores');
+
+            const swatch = menu.querySelector('.color-swatch');
+            assert(swatch, 'el menú no tiene swatches');
+            swatch.click();
+            await esperar(150);
+
+            const rojo = 'rgb(248, 215, 218)';
+            idsBloque.forEach(id => {
+                const actual = filaPorId(id);
+                assert(actual, `no existe la fila ${id}`);
+                assert(actual.style.backgroundColor === rojo,
+                    `la fila ${id} no recibió el color (${actual.style.backgroundColor})`);
+            });
+
+            const fuera = fila(2);
+            assert(!idsBloque.includes(fuera.dataset.idFila), 'la fila 2 no debe estar en el bloque');
+            assert(fuera.style.backgroundColor === '', 'se pintó una fila fuera de la selección');
+        });
+
+        await test('Clic derecho fuera de la selección la reduce a esa fila', async () => {
+            const fuera = fila(2);
+            abrirMenuColoresEn(fuera);
+            await esperar(50);
+
+            assert(filasPintadas().length === 1, 'la selección previa no se reemplazó');
+            assert(filasPintadas()[0] === fuera, 'la fila seleccionada no es la del clic derecho');
+
+            const menu = document.getElementById('menuColores');
+            assert(menu, 'no se abrió el menú de colores');
+
+            const naranja = menu.querySelectorAll('.color-swatch')[1];
+            assert(naranja, 'el menú no tiene el swatch naranja');
+            naranja.click();
+            await esperar(150);
+
+            assert(fuera.style.backgroundColor === 'rgb(255, 232, 204)',
+                `la fila del clic derecho no recibió el naranja (${fuera.style.backgroundColor})`);
+            assert(fila(0).style.backgroundColor === 'rgb(248, 215, 218)',
+                'la fila 0 del bloque anterior perdió su color');
+            assert(fila(1).style.backgroundColor === 'rgb(248, 215, 218)',
+                'la fila 1 del bloque anterior perdió su color');
+        });
+
+        await test('Quitar color afecta a todo el bloque seleccionado', async () => {
+            raton(celda(0, 0), 'mousedown');
+            raton(celda(1, 0), 'mousemove');
+            raton(document, 'mouseup');
+            await esperar(60);
+            assert(filasPintadas().length === 2, 'no se seleccionó el bloque para quitar color');
+
+            abrirMenuColoresEn(fila(0));
+            await esperar(50);
+
+            const menu = document.getElementById('menuColores');
+            assert(menu, 'no se abrió el menú de colores');
+
+            const quitar = menu.querySelector('.context-menu-item.danger');
+            assert(quitar, 'el menú no tiene "Quitar color"');
+            quitar.click();
+            await esperar(150);
+
+            assert(fila(0).style.backgroundColor === '', 'la fila 0 conserva el color');
+            assert(fila(1).style.backgroundColor === '', 'la fila 1 conserva el color');
+            assert(fila(2).style.backgroundColor === 'rgb(255, 232, 204)',
+                'la fila 2 (fuera del bloque) perdió su color');
+        });
+
+        await test('Clic derecho sobre la cantidad conserva el menú nativo', async () => {
+            const antes = window.filasSeleccionadas.size;
+            const input = document.querySelector('#tablaConsolidadaBody .input-cantidad');
+            assert(input, 'no hay input de cantidad');
+
+            abrirMenuColoresEn(input);
+            await esperar(50);
+
+            assert(!document.getElementById('menuColores'),
+                'se abrió el menú de colores sobre la cantidad');
+            assert(window.filasSeleccionadas.size === antes,
+                'el clic derecho sobre la cantidad alteró la selección');
+        });
+
+        await test('La API global expone y limpia las filas seleccionadas', async () => {
+            assert(window.filasSeleccionadas instanceof Set,
+                'falta window.filasSeleccionadas');
+            assert(typeof window.obtenerFilasSeleccionadas === 'function',
+                'falta window.obtenerFilasSeleccionadas');
+            assert(typeof window.limpiarFilasSeleccionadas === 'function',
+                'falta window.limpiarFilasSeleccionadas');
+
+            const listado = window.obtenerFilasSeleccionadas().sort();
+            assert(JSON.stringify(listado) === JSON.stringify(idsSeleccionados()),
+                'la API no devuelve el mismo Set');
+
+            window.limpiarFilasSeleccionadas();
+            await esperar(30);
+            assert(window.filasSeleccionadas.size === 0, 'la API no vació el Set');
+            assert(filasPintadas().length === 0, 'la API no quitó las clases');
+        });
+
+        await test('Repintar la tabla limpia la selección', async () => {
+            raton(celda(0, 0), 'mousedown');
+            raton(celda(2, 2), 'mousemove');
+            await esperar(250);
+            assert(filasPintadas().length === 3, 'no se seleccionó antes de repintar');
+            raton(document, 'mouseup');
+            await esperar(30);
+
+            click('btnNewGroup');
+            click('btnAddSection');
+            const alumno = document.querySelector('#sectionList .input-alumnos');
+            alumno.value = '10';
+            alumno.dispatchEvent(new Event('input', { bubbles: true }));
+            click('btnCalcularTotal');
+            await esperar(700);
+
+            assert(window.filasSeleccionadas.size === 0,
+                'la selección no se limpió al repintar la tabla');
+            assert(filasPintadas().length === 0, 'quedaron filas pintadas tras repintar');
+        });
+
+        const pre = document.createElement('pre');
+        pre.id = 'resultado';
+        pre.textContent = JSON.stringify({
+            resultados,
+            erroresGlobales: window.__testErrors
+        });
+        document.body.appendChild(pre);
+    }
+
+    correr().catch(error => {
+        const pre = document.createElement('pre');
+        pre.id = 'resultado';
+        pre.textContent = JSON.stringify({
+            fatal: String(error),
+            stack: error && error.stack,
+            erroresGlobales: window.__testErrors,
+            resultados
+        });
+        document.body.appendChild(pre);
+    });
+</script>
+</body>
+</html>

@@ -2,10 +2,9 @@ use tauri_plugin_store::StoreExt;
 
 // Mismo store que colores/vinculaciones: toda la configuración de la app vive
 // en config.json. El plugin JS de store no está disponible sin bundler, así que
-// el toggle de la vista compacta se persiste con estos dos comandos.
+// las preferencias de vista se persisten con comandos de Rust.
 const STORE_CONFIG: &str = "config.json";
 const CLAVE_VISTA_COMPACTA: &str = "vista_compacta";
-const CLAVE_VISTA_COMPACTA_GRUPOS: &str = "vista_compacta_grupos";
 const CLAVE_GRUPOS_POR_PAGINA: &str = "grupos_por_pagina";
 
 /// Cantidad de grupos visibles por página cuando el usuario no ha elegido otra.
@@ -22,10 +21,18 @@ fn normalizar_grupos_por_pagina(cantidad: u32) -> u32 {
 pub fn obtener_vista_compacta(app: tauri::AppHandle) -> Result<bool, String> {
     let store = app.store(STORE_CONFIG).map_err(|e| e.to_string())?;
 
-    Ok(store
+    let activa = store
         .get(CLAVE_VISTA_COMPACTA)
         .and_then(|valor| valor.as_bool())
-        .unwrap_or(false))
+        .unwrap_or(false);
+
+    // La vista compacta de grupos se eliminó. Si una versión anterior dejó su
+    // clave, se borra para no dejar basura en config.json.
+    if store.delete("vista_compacta_grupos") {
+        let _ = store.save();
+    }
+
+    Ok(activa)
 }
 
 /// Guarda el estado del toggle para que sobreviva al reinicio.
@@ -37,30 +44,6 @@ pub fn guardar_vista_compacta(
     let store = app.store(STORE_CONFIG).map_err(|e| e.to_string())?;
 
     store.set(CLAVE_VISTA_COMPACTA, serde_json::json!(activa));
-    store.save().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// ¿La lista de grupos se muestra en modo compacto? Por defecto, no.
-#[tauri::command]
-pub fn obtener_vista_compacta_grupos(app: tauri::AppHandle) -> Result<bool, String> {
-    let store = app.store(STORE_CONFIG).map_err(|e| e.to_string())?;
-
-    Ok(store
-        .get(CLAVE_VISTA_COMPACTA_GRUPOS)
-        .and_then(|valor| valor.as_bool())
-        .unwrap_or(false))
-}
-
-/// Guarda el modo compacto de la lista de grupos.
-#[tauri::command]
-pub fn guardar_vista_compacta_grupos(
-    app: tauri::AppHandle,
-    activa: bool,
-) -> Result<(), String> {
-    let store = app.store(STORE_CONFIG).map_err(|e| e.to_string())?;
-
-    store.set(CLAVE_VISTA_COMPACTA_GRUPOS, serde_json::json!(activa));
     store.save().map_err(|e| e.to_string())?;
     Ok(())
 }

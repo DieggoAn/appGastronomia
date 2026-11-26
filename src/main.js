@@ -6,8 +6,20 @@ let ingredientesConsolidados = [];
 // Datos crudos de la última consolidación: [{ ruta, datos }].
 // Permiten saber cuánto aportó cada archivo a cada fila consolidada.
 let ingredientesPorArchivo = [];
+// Desglose por hoja: [{ ruta, hoja, datos }]. Es la fuente del cálculo
+// vinculado, porque cada hoja se asocia a grupos de forma independiente.
+let ingredientesPorHoja = [];
 let tituloConsolidado = 'Consolidado de ingredientes';
 let diccionarioMaestro = [];
+
+// --- SELECCIÓN MÚLTIPLE DE FILAS (arrastre) ---
+// La fuente de verdad son los ids `data-id-fila` de las filas pintadas.
+// Se expone en `window.filasSeleccionadas` para que otras funciones la usen.
+const filasSeleccionadas = new Set();
+const CLASE_FILA_SELECCIONADA = 'fila-seleccionada';
+let estadoArrastreFilas = null;
+let frameAutoScrollFilas = null;
+window.filasSeleccionadas = filasSeleccionadas;
 
 // Ajustes GENERALES de la app (pestañas "General" y "Exportación"). No
 // contienen ninguna regla de lectura de Excel: eso vive aparte en
@@ -46,8 +58,20 @@ function crearMapeoPorDefecto() {
     };
 }
 
+// Sinónimos de encabezados para importar grupos desde Excel (pestaña
+// "Mapeo de Grupos"). Se persisten por separado bajo `mapeo_grupos`.
+function crearMapeoGruposPorDefecto() {
+    return {
+        codigo: ['codigo', 'cod', 'clave'],
+        asignatura: ['asignatura', 'materia', 'ramo', 'curso'],
+        secciones: ['secciones', 'seccion'],
+        alumnos: ['alumnos x seccion', 'alumnos', 'alumno']
+    };
+}
+
 let ajustesProcesamiento = crearAjustesPorDefecto();
 let mapeoInsumos = crearMapeoPorDefecto();
+let mapeoGrupos = crearMapeoGruposPorDefecto();
 
 let ajustesCargadosPromise = null;
 let vistaCompactaCargadaPromise = null;
@@ -204,6 +228,82 @@ function ocultarProcesando() {
     if (indicador) indicador.hidden = true;
 }
 
+// --- CONTADORES DE HOJAS ---
+// Se manejan dos métricas distintas e independientes:
+//  * Panel izquierdo (#hojasProcesando): hojas marcadas que el usuario está
+//    preparando. Su fuente de verdad son las casillas `.chk-sheet` del DOM.
+//  * Barra central (#hojasProcesadas): hojas que realmente alimentaron la
+//    tabla. La fija el resultado de Rust al terminar de procesar.
+let hojasEnLectura = 0;
+
+function contarHojasSeleccionadas() {
+    return document.querySelectorAll('.chk-sheet:checked').length;
+}
+
+// Update quirúrgico del badge: nunca repinta la lista de archivos.
+function actualizarIndicadorHojasSeleccionadas() {
+    const indicador = document.getElementById('hojasProcesando');
+    if (!indicador) return;
+
+    const total = contarHojasSeleccionadas();
+
+    // Sin hojas marcadas no se reserva espacio: el badge desaparece.
+    if (total === 0) {
+        indicador.hidden = true;
+        return;
+    }
+
+    const texto = document.getElementById('hojasProcesandoTexto');
+    if (texto) {
+        texto.textContent = total === 1 ? '1 hoja' : `${total} hojas`;
+    }
+
+    // El spinner refleja el avance real de Rust, no el conteo de selección.
+    const spinner = document.getElementById('hojasProcesandoSpinner');
+    if (spinner) spinner.hidden = hojasEnLectura === 0;
+
+    indicador.title = hojasEnLectura > 0
+        ? `Hojas seleccionadas (${hojasEnLectura} en lectura)`
+        : 'Hojas seleccionadas para procesar';
+
+    indicador.hidden = false;
+}
+
+// Rust emite `hojas-procesando` con las hojas pendientes de todas las lecturas
+// activas. Solo se usa para el spinner: el conteo del panel es la selección.
+function actualizarProgresoHojasRust(cantidad) {
+    hojasEnLectura = Math.max(0, Math.trunc(Number(cantidad) || 0));
+    actualizarIndicadorHojasSeleccionadas();
+}
+
+function actualizarIndicadorHojasProcesadas(cantidad) {
+    const indicador = document.getElementById('hojasProcesadas');
+    if (!indicador) return;
+
+    const total = Math.max(0, Math.trunc(Number(cantidad) || 0));
+    indicador.textContent = total === 1
+        ? '1 hoja procesada'
+        : `${total} hojas procesadas`;
+    indicador.classList.toggle('destacado', total > 0);
+}
+
+function escucharHojasProcesando() {
+    const eventos = window.__TAURI__?.event;
+
+    // Sin `withGlobalTauri` o sin el plugin de eventos, la app sigue igual:
+    // solo se pierde el spinner de avance en el badge.
+    if (!eventos?.listen) {
+        console.warn('[hojas] window.__TAURI__.event no disponible; sin avance en vivo.');
+        return;
+    }
+
+    eventos.listen('hojas-procesando', (evento) => {
+        actualizarProgresoHojasRust(evento.payload);
+    }).catch(error => {
+        console.error('No se pudo escuchar el progreso de hojas:', error);
+    });
+}
+
 // Refleja el interruptor en la UI: checkbox marcado, grupo resaltado y botón
 // manual deshabilitado mientras el autoprocesado esté activo.
 function aplicarAutoProcesar(activo, { persistir = false } = {}) {
@@ -251,6 +351,302 @@ async function inicializarAutoProcesar() {
     }
 }
 
+// --- SELECCIÓN MÚLTIPLE DE FILAS ---
+function limpiarSeleccionFilas() {
+    detenerAutoScrollFilas();
+    estadoArrastreFilas = null;
+
+    document
+        .querySelectorAll(`#tablaConsolidadaBody tr.${CLASE_FILA_SELECCIONADA}`)
+        .forEach(fila => fila.classList.remove(CLASE_FILA_SELECCIONADA));
+
+    filasSeleccionadas.clear();
+    document.body.classList.remove('arrastrando-filas');
+}
+
+// Filas sobre las que actúa el menú contextual. Si la fila pulsada ya está en
+// la selección se respeta todo el bloque; si no, la selección pasa a ser solo
+// esa fila (comportamiento estándar de Excel).
+function filasParaAccionContextual(fila) {
+    const idFila = fila?.dataset?.idFila;
+    if (!idFila) return [];
+
+    if (filasSeleccionadas.has(idFila)) {
+        return Array.from(filasSeleccionadas);
+    }
+
+    limpiarSeleccionFilas();
+    fila.classList.add(CLASE_FILA_SELECCIONADA);
+    filasSeleccionadas.add(idFila);
+    return [idFila];
+}
+
+// Filas completas entre el ancla y la fila actual (en orden visible).
+function filasDelRangoSeleccion(estado) {
+    const desde = Math.min(estado.ancla, estado.actual);
+    const hasta = Math.max(estado.ancla, estado.actual);
+    return estado.filas.slice(desde, hasta + 1);
+}
+
+// Aplica solo las diferencias entre el rango anterior y el nuevo. La clase
+// vive en el <tr>: el CSS pinta todas sus celdas sin recorrerlas una a una.
+function aplicarRangoSeleccionFilas() {
+    const estado = estadoArrastreFilas;
+    if (!estado) return;
+
+    const nuevas = new Set(filasDelRangoSeleccion(estado));
+
+    estado.rangoPrevio.forEach(fila => {
+        const id = fila.dataset.idFila;
+        if (nuevas.has(fila) || (id && estado.base.has(id))) return;
+
+        fila.classList.remove(CLASE_FILA_SELECCIONADA);
+        if (id) filasSeleccionadas.delete(id);
+    });
+
+    nuevas.forEach(fila => {
+        fila.classList.add(CLASE_FILA_SELECCIONADA);
+        if (fila.dataset.idFila) filasSeleccionadas.add(fila.dataset.idFila);
+    });
+
+    // Con Ctrl/Cmd se conservan las filas que ya estaban seleccionadas.
+    estado.base.forEach(id => {
+        const fila = estado.mapa.get(id);
+        if (!fila) return;
+
+        fila.classList.add(CLASE_FILA_SELECCIONADA);
+        filasSeleccionadas.add(id);
+    });
+
+    estado.rangoPrevio = nuevas;
+}
+
+// Contenedor con scroll vertical más cercano (en esta app, `.main-center`).
+function buscarContenedorDesplazable(elemento) {
+    let actual = elemento?.parentElement;
+
+    while (actual && actual !== document.body) {
+        const estilo = getComputedStyle(actual);
+        const desbordaY = /(auto|scroll)/.test(estilo.overflowY);
+
+        if (desbordaY && actual.scrollHeight > actual.clientHeight + 1) return actual;
+        actual = actual.parentElement;
+    }
+
+    const raiz = document.scrollingElement;
+    return raiz && raiz.scrollHeight > raiz.clientHeight + 1 ? raiz : null;
+}
+
+function detenerAutoScrollFilas() {
+    if (frameAutoScrollFilas !== null) {
+        cancelAnimationFrame(frameAutoScrollFilas);
+        frameAutoScrollFilas = null;
+    }
+
+    if (estadoArrastreFilas) estadoArrastreFilas.direccionScroll = 0;
+}
+
+function pasoAutoScrollFilas() {
+    frameAutoScrollFilas = null;
+
+    const estado = estadoArrastreFilas;
+    if (!estado || !estado.direccionScroll || !estado.contenedorScroll) return;
+
+    const contenedor = estado.contenedorScroll;
+    const antes = contenedor.scrollTop;
+    contenedor.scrollTop = antes + estado.direccionScroll * 14;
+
+    if (contenedor.scrollTop === antes) {
+        estado.direccionScroll = 0;
+        return;
+    }
+
+    if (!estado.tabla) {
+        estado.direccionScroll = 0;
+        return;
+    }
+
+    // Se toma la fila que quedó en el borde visible (no la siguiente del
+    // array), para que la selección siga exactamente lo que el usuario ve.
+    const rectContenedor = contenedor.getBoundingClientRect();
+    const rectTabla = estado.tabla.getBoundingClientRect();
+    const arriba = Math.max(rectContenedor.top, rectTabla.top) + 4;
+    const abajo = Math.min(rectContenedor.bottom, rectTabla.bottom) - 4;
+    const y = estado.direccionScroll > 0 ? abajo : arriba;
+    const x = Math.min(
+        Math.max(estado.ultimoX, rectContenedor.left + 8),
+        rectContenedor.right - 8
+    );
+    const enPunto = document.elementFromPoint(x, y);
+    const fila = enPunto instanceof Element
+        ? enPunto.closest('#tablaConsolidadaBody tr[data-id-fila]')
+        : null;
+    const indice = fila ? estado.indiceFila.get(fila) : undefined;
+
+    if (indice !== undefined) {
+        estado.actual = indice;
+        aplicarRangoSeleccionFilas();
+    }
+
+    frameAutoScrollFilas = requestAnimationFrame(pasoAutoScrollFilas);
+}
+
+function actualizarDireccionAutoScroll(estado, clientY) {
+    if (!estado.contenedorScroll || !estado.rectScroll) return;
+
+    const margen = 24;
+    const rect = estado.rectScroll;
+
+    if (clientY < rect.top + margen) estado.direccionScroll = -1;
+    else if (clientY > rect.bottom - margen) estado.direccionScroll = 1;
+    else estado.direccionScroll = 0;
+
+    if (estado.direccionScroll && frameAutoScrollFilas === null) {
+        frameAutoScrollFilas = requestAnimationFrame(pasoAutoScrollFilas);
+    }
+}
+
+function filaBajoElPuntero(evento) {
+    const objetivo = evento.target instanceof Element ? evento.target : null;
+    const directa = objetivo?.closest('#tablaConsolidadaBody tr[data-id-fila]');
+    if (directa) return directa;
+
+    // El puntero puede estar fuera del tbody (borde o fuera de la tabla):
+    // se resuelve por coordenadas para no perder el gesto.
+    const enPunto = document.elementFromPoint(evento.clientX, evento.clientY);
+    return enPunto instanceof Element
+        ? enPunto.closest('#tablaConsolidadaBody tr[data-id-fila]')
+        : null;
+}
+
+function iniciarArrastreFilas(evento) {
+    if (evento.button !== 0) return;
+    if (!(evento.target instanceof Element)) return;
+
+    // No interferir con inputs, botones ni enlaces: la edición manda.
+    if (evento.target.closest('input, textarea, select, button, a, label')) {
+        return;
+    }
+
+    const fila = evento.target.closest('#tablaConsolidadaBody tr[data-id-fila]');
+    if (!fila) return;
+
+    const tbody = fila.closest('tbody');
+    if (!tbody) return;
+
+    const filasTodas = Array.from(tbody.querySelectorAll('tr[data-id-fila]'));
+    const mapa = new Map();
+    filasTodas.forEach(filaActual => {
+        if (filaActual.dataset.idFila) mapa.set(filaActual.dataset.idFila, filaActual);
+    });
+
+    // El filtro por color oculta filas con `hidden`: el rango se calcula solo
+    // sobre las visibles para no pintar filas que el usuario no ve.
+    const filas = filasTodas.filter(filaActual => !filaActual.hidden);
+    const indice = filas.indexOf(fila);
+    if (indice < 0) return;
+
+    const conModificador = evento.ctrlKey || evento.metaKey;
+    if (!conModificador) limpiarSeleccionFilas();
+
+    const contenedorScroll = buscarContenedorDesplazable(tbody);
+
+    estadoArrastreFilas = {
+        base: conModificador ? new Set(filasSeleccionadas) : new Set(),
+        ancla: indice,
+        actual: indice,
+        filas,
+        indiceFila: new Map(filas.map((filaActual, posicion) => [filaActual, posicion])),
+        mapa,
+        rangoPrevio: new Set(),
+        contenedorScroll,
+        rectScroll: contenedorScroll?.getBoundingClientRect() || null,
+        tabla: tbody.closest('table'),
+        ultimoX: evento.clientX,
+        direccionScroll: 0
+    };
+
+    document.body.classList.add('arrastrando-filas');
+    evento.preventDefault();
+
+    // Evita que quede una selección de texto nativa a medias.
+    window.getSelection?.()?.removeAllRanges();
+
+    aplicarRangoSeleccionFilas();
+}
+
+function moverArrastreFilas(evento) {
+    const estado = estadoArrastreFilas;
+    if (!estado) return;
+
+    // Si el botón izquierdo ya no está preso (por ejemplo, se soltó fuera de
+    // la ventana y no llegó el mouseup), se cierra el arrastre.
+    if ((evento.buttons & 1) === 0) {
+        terminarArrastreFilas();
+        return;
+    }
+
+    const fila = filaBajoElPuntero(evento);
+
+    if (fila) {
+        const indice = estado.indiceFila.get(fila);
+        if (indice !== undefined) {
+            evento.preventDefault();
+            estado.actual = indice;
+
+            // El diff es a nivel de filas (unas pocas clases por movimiento),
+            // así que se aplica al instante sin rAF ni repintado de la tabla.
+            aplicarRangoSeleccionFilas();
+        }
+    }
+
+    // Aunque el puntero esté fuera de las filas, acercarse al borde superior
+    // o inferior del contenedor desplaza la tabla para seguir seleccionando.
+    estado.ultimoX = evento.clientX;
+    actualizarDireccionAutoScroll(estado, evento.clientY);
+}
+
+function terminarArrastreFilas() {
+    if (!estadoArrastreFilas) return;
+
+    detenerAutoScrollFilas();
+
+    // El rango se aplica en cada movimiento; se reaplica por si el scroll
+    // automático dejó una fila a medio actualizar.
+    aplicarRangoSeleccionFilas();
+
+    estadoArrastreFilas = null;
+    document.body.classList.remove('arrastrando-filas');
+}
+
+function inicializarSeleccionFilas(tbody) {
+    if (!tbody) return;
+
+    tbody.addEventListener('mousedown', iniciarArrastreFilas);
+
+    // El movimiento y el cierre se escuchan en document para que el gesto
+    // sobreviva a salir de la tabla o del contenedor.
+    document.addEventListener('mousemove', moverArrastreFilas);
+    document.addEventListener('mouseup', terminarArrastreFilas);
+    window.addEventListener('blur', terminarArrastreFilas);
+
+    // Un arrastre nativo (texto/imagen) durante la selección rompería el
+    // gesto: se cancela mientras haya una selección de filas activa.
+    tbody.addEventListener('dragstart', evento => {
+        if (estadoArrastreFilas) evento.preventDefault();
+    });
+
+    // Refuerzo del user-select: algunos navegadores inician la selección de
+    // texto antes de aplicar la clase en <body>.
+    document.addEventListener('selectstart', evento => {
+        if (estadoArrastreFilas) evento.preventDefault();
+    });
+}
+
+// API mínima para que otras partes de la app consuman la selección.
+window.obtenerFilasSeleccionadas = () => Array.from(filasSeleccionadas);
+window.limpiarFilasSeleccionadas = limpiarSeleccionFilas;
+
 // --- ÚNICO BLOQUE DOMContentLoaded ---
 window.addEventListener('DOMContentLoaded', () => {
     const btnAddSection = document.getElementById('btnAddSection');
@@ -271,10 +667,13 @@ window.addEventListener('DOMContentLoaded', () => {
     const btnVincular = document.getElementById('btnVincular');
     const inputTituloConsolidado = document.getElementById('tituloConsolidado');
 
+    // Progreso de hojas que reporta Rust (panel izquierdo).
+    escucharHojasProcesando();
+
     // Carga inicial de los colores persistidos (no bloquea el arranque)
     coloresCargadosPromise = cargarColoresFilas();
 
-    // Carga inicial de las vinculaciones archivo-grupo (no bloquea el arranque)
+    // Carga inicial de las vinculaciones hoja-grupo (no bloquea el arranque)
     vinculacionesCargadasPromise = cargarVinculaciones();
 
     // Carga inicial de los ajustes de procesamiento (no bloquea el arranque)
@@ -306,9 +705,9 @@ window.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('resize', cerrarMenuFiltroColor);
     window.addEventListener('blur', cerrarMenuFiltroColor);
 
-    // Vinculación de archivos Excel con los grupos guardados
+    // Vinculación de hojas Excel con los grupos guardados
     if (btnVincular) {
-        btnVincular.addEventListener('click', abrirModalVincular);
+        btnVincular.addEventListener('click', () => abrirModalVincular());
     }
 
     // Ajustes de procesamiento (delay y sinónimos de columnas)
@@ -404,6 +803,8 @@ window.addEventListener('DOMContentLoaded', () => {
     // Click derecho sobre una fila de ingredientes: menú de colores
     const tablaConsolidadaBody = document.getElementById('tablaConsolidadaBody');
     if (tablaConsolidadaBody) {
+        inicializarSeleccionFilas(tablaConsolidadaBody);
+
         tablaConsolidadaBody.addEventListener('contextmenu', (evento) => {
             const fila = evento.target.closest('tr');
             if (!fila || !fila.querySelector('strong')) return; // filas de estado sin ingrediente
@@ -418,7 +819,11 @@ window.addEventListener('DOMContentLoaded', () => {
             evento.preventDefault();
             evento.stopPropagation();
 
-            abrirMenuColores(evento.clientX, evento.clientY, idFila, fila);
+            // El menú de colores actúa sobre el bloque seleccionado. Si la
+            // fila pulsada no estaba seleccionada, la selección se reemplaza
+            // por esa sola fila.
+            const idsColor = filasParaAccionContextual(fila);
+            abrirMenuColores(evento.clientX, evento.clientY, idFila, fila, idsColor);
         });
 
         // Edición manual de la cantidad. Se usa delegación para que sobreviva
@@ -664,6 +1069,7 @@ window.addEventListener('DOMContentLoaded', () => {
             procesarHojasDebounced.cancelar();
             desmarcarHojaDebounced.cancelar();
             actualizarBotonEliminarSeleccionados();
+            actualizarIndicadorHojasSeleccionadas();
         });
     }
 
@@ -743,6 +1149,11 @@ window.addEventListener('DOMContentLoaded', () => {
     // --- Importar grupos desde un Excel (codigo / Asignatura / secciones / alumnos) ---
     if (btnImportarGruposExcel) {
         btnImportarGruposExcel.addEventListener('click', importarGruposDesdeExcel);
+    }
+
+    const btnEliminarTodosGrupos = document.getElementById('btnEliminarTodosGrupos');
+    if (btnEliminarTodosGrupos) {
+        btnEliminarTodosGrupos.addEventListener('click', eliminarTodosLosGrupos);
     }
 
     cargarArchivosRecientes();
@@ -825,8 +1236,6 @@ const GRUPOS_POR_PAGINA_OPCIONES = [5, 10, 20, 50];
 
 // `...Guardado` es lo persistido; `...Activo` es lo que se ve ahora mismo (el
 // modal puede previsualizar un cambio sin guardarlo).
-let vistaCompactaGruposGuardada = false;
-let vistaCompactaGruposActiva = false;
 let gruposPorPaginaGuardado = GRUPOS_POR_PAGINA_POR_DEFECTO;
 let gruposPorPaginaActivo = GRUPOS_POR_PAGINA_POR_DEFECTO;
 
@@ -839,24 +1248,6 @@ function normalizarGruposPorPagina(valor) {
     const numero = Math.trunc(Number(valor));
     if (!Number.isFinite(numero) || numero < 1) return GRUPOS_POR_PAGINA_POR_DEFECTO;
     return Math.min(numero, GRUPOS_POR_PAGINA_MAX);
-}
-
-function aplicarVistaCompactaGrupos(activa) {
-    vistaCompactaGruposActiva = Boolean(activa);
-
-    const savedList = document.getElementById('savedList');
-    if (savedList) {
-        savedList.classList.toggle('modo-compacto', vistaCompactaGruposActiva);
-    }
-
-    // Mantiene el interruptor del modal sincronizado.
-    const chk = document.getElementById('ajusteVistaCompactaGrupos');
-    if (chk) {
-        chk.checked = vistaCompactaGruposActiva;
-        if (chk.getAttribute('role') === 'switch') {
-            chk.setAttribute('aria-checked', String(vistaCompactaGruposActiva));
-        }
-    }
 }
 
 function aplicarGruposPorPagina(cantidad) {
@@ -876,16 +1267,10 @@ function aplicarGruposPorPagina(cantidad) {
 
 async function inicializarGruposVista() {
     try {
-        const [compacta, porPagina] = await Promise.all([
-            invoke('obtener_vista_compacta_grupos'),
-            invoke('obtener_grupos_por_pagina')
-        ]);
+        const porPagina = await invoke('obtener_grupos_por_pagina');
 
-        vistaCompactaGruposGuardada = Boolean(compacta);
         gruposPorPaginaGuardado = normalizarGruposPorPagina(porPagina);
         gruposPorPaginaActivo = gruposPorPaginaGuardado;
-
-        aplicarVistaCompactaGrupos(vistaCompactaGruposGuardada);
     } catch (error) {
         console.error('No se pudo leer la configuración de la lista de grupos:', error);
     }
@@ -907,6 +1292,9 @@ async function cargarGruposGuardados() {
         paginaGruposActual = Math.min(paginaGruposActual, totalPaginas - 1);
 
         renderizarGruposGuardados();
+        // Las secciones de los grupos también definen el multiplicador de
+        // cada hoja en el panel izquierdo.
+        actualizarPanelVinculaciones();
     } catch (error) {
         console.error("Error al cargar grupos guardados:", error);
     }
@@ -928,7 +1316,7 @@ function renderizarGruposGuardados() {
         const index = inicio + offset;
         const li = document.createElement('li');
         const nombreSeguro = escaparHtml(grupo.nombre);
-        // El `title` muestra el nombre completo cuando la vista compacta lo trunca.
+        // El `title` permite ver el nombre completo si el ancho lo recorta.
         li.innerHTML = `
             <span class="saved-name" title="${nombreSeguro}">${nombreSeguro}</span>
             <button class="btn-use-group" data-index="${index}" type="button">Usar</button>
@@ -1000,6 +1388,56 @@ function irPaginaGrupos(delta) {
 
     paginaGruposActual = destino;
     renderizarGruposGuardados();
+}
+
+// Elimina todos los grupos guardados y deja el panel en estado vacío.
+async function eliminarTodosLosGrupos() {
+    // Primero se pide confirmación y se espera la respuesta del usuario.
+    const confirmado = await window.__TAURI__.dialog.ask(
+        '¿Estás seguro de que deseas eliminar TODOS los grupos guardados? Esta acción no se puede deshacer.',
+        {
+            title: 'Eliminar todos los grupos',
+            kind: 'warning',
+            okLabel: 'Eliminar',
+            cancelLabel: 'Cancelar'
+        }
+    );
+
+    if (!confirmado) return;
+
+    // Solo se limpia el panel de edición si estaba mostrando un grupo guardado.
+    const inputTitulo = document.getElementById('groupTitle');
+    const nombreEnPanel = inputTitulo ? inputTitulo.value : '';
+    const grupoSeleccionado = gruposGuardadosCache.some(
+        grupo => grupo.nombre === nombreEnPanel
+    );
+
+    try {
+        // Primero el Store: si el borrado falla, la interfaz no se toca.
+        await invoke('eliminar_todos_los_grupos');
+
+        // Limpieza del estado en memoria.
+        gruposGuardadosCache = [];
+        paginaGruposActual = 0;
+
+        // Las hojas no deben quedar vinculadas a grupos que ya no existen.
+        vinculacionesHojasGrupos.clear();
+        persistirVinculaciones();
+        actualizarPanelVinculaciones();
+
+        if (grupoSeleccionado) {
+            if (inputTitulo) inputTitulo.value = 'Nuevo Grupo';
+
+            seccionesActuales = [];
+            const sectionList = document.getElementById('sectionList');
+            if (sectionList) renderizarSecciones([], sectionList);
+        }
+
+        renderizarGruposGuardados();
+    } catch (error) {
+        alert('Error al eliminar los grupos: ' + error);
+        await cargarGruposGuardados();
+    }
 }
 
 function usarGrupoGuardado(grupo) {
@@ -1217,13 +1655,23 @@ async function importarGruposDesdeExcel() {
 
     if (!ruta) return;
 
+    // Asegura que el mapeo de grupos guardado esté cargado antes de importar.
+    try {
+        await (ajustesCargadosPromise || Promise.resolve());
+    } catch (error) {
+        console.error('No se pudo cargar el mapeo de grupos antes de importar:', error);
+    }
+
     if (boton) boton.disabled = true;
 
     try {
         let gruposImportados = [];
 
         try {
-            gruposImportados = await invoke('importar_grupos_excel', { ruta });
+            gruposImportados = await invoke('importar_grupos_excel', {
+                ruta,
+                sinonimos: mapeoGrupos
+            });
         } catch (error) {
             await window.__TAURI__.dialog.message(
                 'No se pudieron importar los grupos.\n\n' + String(error),
@@ -1390,6 +1838,7 @@ async function inicializarVistaCompacta() {
 
 const AJUSTES_POR_DEFECTO = crearAjustesPorDefecto();
 const MAPEO_POR_DEFECTO = crearMapeoPorDefecto();
+const MAPEO_GRUPOS_POR_DEFECTO = crearMapeoGruposPorDefecto();
 
 // Valores estables (`valor`) y etiquetas visibles (`texto`) de los ajustes
 // con opciones fijas. El tema se muestra en el modal como interruptor.
@@ -1628,6 +2077,39 @@ function normalizarMapeoInsumos(valores) {
     };
 }
 
+// Normaliza los sinónimos de columnas para importar grupos. Si una lista no
+// existe en el Store se usan los valores recomendados; un array vacío
+// explícito se respeta (y la validación impide guardarlo).
+function normalizarMapeoGrupos(valores) {
+    const fuente = valores && typeof valores === 'object' ? valores : {};
+
+    const lista = (valor, recomendados) => {
+        if (valor === undefined || valor === null) {
+            return listaSinonimos(recomendados);
+        }
+
+        return listaSinonimos(valor);
+    };
+
+    return {
+        codigo: lista(fuente.codigo, MAPEO_GRUPOS_POR_DEFECTO.codigo),
+        asignatura: lista(fuente.asignatura, MAPEO_GRUPOS_POR_DEFECTO.asignatura),
+        secciones: lista(fuente.secciones, MAPEO_GRUPOS_POR_DEFECTO.secciones),
+        alumnos: lista(fuente.alumnos, MAPEO_GRUPOS_POR_DEFECTO.alumnos)
+    };
+}
+
+function faltantesMapeoGrupos(mapeo) {
+    const faltantes = [];
+
+    if (!mapeo.codigo.length) faltantes.push('Código');
+    if (!mapeo.asignatura.length) faltantes.push('Asignatura');
+    if (!mapeo.secciones.length) faltantes.push('Secciones');
+    if (!mapeo.alumnos.length) faltantes.push('Alumnos');
+
+    return faltantes;
+}
+
 // Devuelve las listas obligatorias del mapeo que quedaron vacías, con el mismo
 // criterio que valida el backend, para avisar antes de guardar.
 function faltantesMapeoInsumos(mapeo) {
@@ -1663,10 +2145,12 @@ function aplicarTema(tema) {
 }
 
 async function cargarAjustesProcesamiento() {
-    const [resultadoAjustes, resultadoMapeo] = await Promise.allSettled([
-        invoke('obtener_ajustes_procesamiento'),
-        invoke('obtener_mapeo_insumos')
-    ]);
+    const [resultadoAjustes, resultadoMapeo, resultadoMapeoGrupos] =
+        await Promise.allSettled([
+            invoke('obtener_ajustes_procesamiento'),
+            invoke('obtener_mapeo_insumos'),
+            invoke('obtener_mapeo_grupos')
+        ]);
 
     if (resultadoAjustes.status === 'fulfilled') {
         ajustesProcesamiento = normalizarAjustes(resultadoAjustes.value);
@@ -1688,11 +2172,25 @@ async function cargarAjustesProcesamiento() {
         mapeoInsumos = normalizarMapeoInsumos(null);
     }
 
+    if (resultadoMapeoGrupos.status === 'fulfilled') {
+        mapeoGrupos = normalizarMapeoGrupos(resultadoMapeoGrupos.value);
+    } else {
+        console.error(
+            'No se pudo leer el mapeo de grupos:',
+            resultadoMapeoGrupos.reason
+        );
+        mapeoGrupos = normalizarMapeoGrupos(null);
+    }
+
     // El tema guardado se aplica en cuanto se conoce, sin esperar al modal.
     aplicarTema(ajustesProcesamiento.tema);
     reformatearCantidadesTabla();
 
-    return { ajustes: ajustesProcesamiento, mapeo: mapeoInsumos };
+    return {
+        ajustes: ajustesProcesamiento,
+        mapeo: mapeoInsumos,
+        mapeoGrupos
+    };
 }
 
 function cerrarAjustesProcesamiento() {
@@ -1708,7 +2206,6 @@ function cerrarAjustesProcesamiento() {
         aplicarTema(ajustesProcesamiento.tema);
         reformatearCantidadesTabla();
         aplicarVistaCompacta(vistaCompactaGuardada);
-        aplicarVistaCompactaGrupos(vistaCompactaGruposGuardada);
         aplicarGruposPorPagina(gruposPorPaginaGuardado);
     }
 }
@@ -2675,6 +3172,257 @@ function crearEditorUnidadesAjuste({ id, valores = [], valoresPorDefecto = [], p
     return campo;
 }
 
+// --- EDITOR VERTICAL DE SINÓNIMOS (Mapeo de Grupos) ---
+// Cuatro bloques con título, input + botón "+" y una lista vertical con "×".
+function crearEditorSinonimosGrupo({
+    id,
+    titulo,
+    valores = [],
+    valoresPorDefecto = [],
+    placeholder = 'Nuevo sinónimo',
+    pista = '',
+    requerida = false
+}) {
+    const campo = document.createElement('div');
+    campo.className = 'settings-field';
+
+    const cabecera = document.createElement('div');
+    cabecera.className = 'settings-label-row';
+
+    const label = document.createElement('span');
+    label.className = 'settings-label';
+    label.textContent = titulo;
+    cabecera.appendChild(label);
+
+    if (Array.isArray(valoresPorDefecto) && valoresPorDefecto.length > 0) {
+        const btnRecomendados = crearBotonLista(
+            'Usar recomendados',
+            'settings-list-reset',
+            () => restaurar()
+        );
+        btnRecomendados.title = `Restaura los sinónimos recomendados de ${titulo}`;
+        cabecera.appendChild(btnRecomendados);
+    }
+
+    // Fuente de verdad para `leerMapeoGruposDesdeModal`.
+    const oculto = document.createElement('input');
+    oculto.type = 'hidden';
+    oculto.id = id;
+
+    const listaEl = document.createElement('ul');
+    listaEl.className = 'settings-sinonimos-grupo';
+
+    const error = document.createElement('span');
+    error.className = 'settings-list-error';
+    error.hidden = true;
+
+    const filaAgregar = document.createElement('div');
+    filaAgregar.className = 'settings-list-add';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'settings-input';
+    input.placeholder = placeholder;
+    input.setAttribute('aria-label', `Nuevo sinónimo para ${titulo}`);
+
+    const btnAgregar = crearBotonLista(
+        '+',
+        'settings-list-add-btn settings-list-add-plus',
+        () => agregar()
+    );
+    btnAgregar.title = 'Agregar sinónimo';
+    btnAgregar.setAttribute('aria-label', 'Agregar sinónimo');
+
+    filaAgregar.append(input, btnAgregar);
+
+    let lista = listaSinonimos(valores);
+    let indiceEnEdicion = null;
+
+    const sincronizar = () => {
+        oculto.value = JSON.stringify(lista);
+    };
+
+    const mostrarError = (texto) => {
+        error.textContent = texto;
+        error.hidden = !texto;
+    };
+
+    const validar = (valor, indiceIgnorado = -1) => {
+        const limpio = normalizarValorLista(valor);
+
+        if (!limpio) {
+            return { error: 'El sinónimo no puede quedar vacío.' };
+        }
+
+        if (limpio.includes(',')) {
+            return { error: 'Cada sinónimo va por separado: no uses comas.' };
+        }
+
+        const duplicado = lista.some(
+            (otro, indice) =>
+                indice !== indiceIgnorado
+                && otro.toLowerCase() === limpio.toLowerCase()
+        );
+
+        if (duplicado) {
+            return { error: 'Ese sinónimo ya existe en la lista.' };
+        }
+
+        return { valor: limpio };
+    };
+
+    const agregar = () => {
+        const resultado = validar(input.value);
+
+        if (resultado.error) {
+            mostrarError(resultado.error);
+            input.focus();
+            return;
+        }
+
+        lista.push(resultado.valor);
+        input.value = '';
+        mostrarError('');
+        indiceEnEdicion = null;
+        render();
+        input.focus();
+    };
+
+    const render = () => {
+        listaEl.innerHTML = '';
+
+        if (lista.length === 0) {
+            const vacio = document.createElement('li');
+            vacio.className = 'settings-sinonimos-vacio';
+            vacio.textContent = requerida
+                ? 'Lista vacía: agrega al menos un sinónimo.'
+                : 'Sin sinónimos.';
+            listaEl.appendChild(vacio);
+        }
+
+        lista.forEach((valor, indice) => {
+            const fila = document.createElement('li');
+            fila.className = 'settings-sinonimos-item';
+
+            if (indiceEnEdicion === indice) {
+                const inputEdicion = document.createElement('input');
+                inputEdicion.type = 'text';
+                inputEdicion.className = 'settings-input settings-list-edit-input';
+                inputEdicion.value = valor;
+                inputEdicion.setAttribute('aria-label', `Editar sinónimo de ${titulo}`);
+
+                const confirmar = () => {
+                    const resultado = validar(inputEdicion.value, indice);
+
+                    if (resultado.error) {
+                        mostrarError(resultado.error);
+                        inputEdicion.focus();
+                        return;
+                    }
+
+                    lista[indice] = resultado.valor;
+                    indiceEnEdicion = null;
+                    mostrarError('');
+                    render();
+                };
+
+                const cancelar = () => {
+                    indiceEnEdicion = null;
+                    mostrarError('');
+                    render();
+                };
+
+                inputEdicion.addEventListener('keydown', (evento) => {
+                    if (evento.key === 'Enter') {
+                        evento.preventDefault();
+                        evento.stopPropagation();
+                        confirmar();
+                    } else if (evento.key === 'Escape') {
+                        evento.preventDefault();
+                        evento.stopPropagation();
+                        cancelar();
+                    }
+                });
+
+                fila.append(
+                    inputEdicion,
+                    crearBotonLista('Guardar', 'settings-list-btn settings-list-btn-ok', confirmar),
+                    crearBotonLista('Cancelar', 'settings-list-btn', cancelar)
+                );
+
+                listaEl.appendChild(fila);
+                queueMicrotask(() => inputEdicion.focus());
+                return;
+            }
+
+            const texto = document.createElement('span');
+            texto.className = 'settings-sinonimos-texto';
+            texto.textContent = valor;
+            texto.title = valor;
+
+            const editar = crearBotonLista('Editar', 'settings-sinonimos-editar', () => {
+                indiceEnEdicion = indice;
+                mostrarError('');
+                render();
+            });
+
+            const eliminar = document.createElement('button');
+            eliminar.type = 'button';
+            eliminar.className = 'settings-sinonimos-eliminar';
+            eliminar.textContent = '×';
+            eliminar.title = 'Eliminar sinónimo';
+            eliminar.setAttribute('aria-label', `Eliminar ${valor}`);
+            eliminar.addEventListener('click', () => {
+                lista.splice(indice, 1);
+                indiceEnEdicion = null;
+                mostrarError('');
+                render();
+            });
+
+            fila.append(texto, editar, eliminar);
+            listaEl.appendChild(fila);
+        });
+
+        sincronizar();
+    };
+
+    input.addEventListener('keydown', (evento) => {
+        if (evento.key !== 'Enter') return;
+        evento.preventDefault();
+        evento.stopPropagation();
+        agregar();
+    });
+
+    const restaurar = () => {
+        lista = listaSinonimos(valoresPorDefecto);
+        indiceEnEdicion = null;
+        mostrarError('');
+        render();
+    };
+
+    campo.append(cabecera, oculto, listaEl, filaAgregar, error);
+
+    if (pista) {
+        const ayuda = document.createElement('span');
+        ayuda.className = 'settings-hint';
+        ayuda.textContent = pista;
+        campo.appendChild(ayuda);
+    }
+
+    editoresListaAjustes.set(id, {
+        establecer: (nuevos) => {
+            lista = listaSinonimos(nuevos);
+            indiceEnEdicion = null;
+            mostrarError('');
+            render();
+        },
+        restaurar
+    });
+
+    render();
+    return campo;
+}
+
 function valorListaDesdeModal(id) {
     const input = document.getElementById(id);
     if (!input) return [];
@@ -2737,6 +3485,16 @@ function leerMapeoDesdeModal() {
     });
 }
 
+// Lee exclusivamente los controles de la pestaña "Mapeo de Grupos".
+function leerMapeoGruposDesdeModal() {
+    return normalizarMapeoGrupos({
+        codigo: valorListaDesdeModal('mapeoGruposCodigo'),
+        asignatura: valorListaDesdeModal('mapeoGruposAsignatura'),
+        secciones: valorListaDesdeModal('mapeoGruposSecciones'),
+        alumnos: valorListaDesdeModal('mapeoGruposAlumnos')
+    });
+}
+
 // Vuelca el estado general en los controles ya dibujados (se usa al restablecer).
 function volcarAjustesEnModal() {
     const asignarValor = (id, valor) => {
@@ -2758,7 +3516,6 @@ function volcarAjustesEnModal() {
     asignarCheck('ajusteTema', ajustesProcesamiento.tema === 'oscuro');
     asignarValor('ajusteFormatoNumeros', ajustesProcesamiento.formatoNumeros);
     asignarCheck('ajusteVistaCompacta', vistaCompactaGuardada);
-    asignarCheck('ajusteVistaCompactaGrupos', vistaCompactaGruposGuardada);
     asignarValor('ajusteGruposPorPagina', String(gruposPorPaginaGuardado));
     asignarCheck('ajusteIncluirColores', ajustesProcesamiento.incluirColoresExportacion);
     asignarValor(
@@ -2801,6 +3558,25 @@ function volcarMapeoEnModal() {
     asignarUnidades('mapeoUnidades', mapeoInsumos.unidades);
     asignarValor('mapeoFilasCabecera', String(mapeoInsumos.filasCabeceraIgnoradas));
     asignarValor('mapeoFilasEscaneo', String(mapeoInsumos.filasEscaneoCabecera));
+}
+
+// Vuelca el estado del mapeo en la pestaña "Mapeo de Grupos".
+function volcarMapeoGruposEnModal() {
+    const asignarValor = (id, valor) => {
+        const control = document.getElementById(id);
+        if (control) control.value = valor;
+    };
+
+    const asignarLista = (id, valores) => {
+        const editor = editoresListaAjustes.get(id);
+        if (editor) editor.establecer(valores);
+        else asignarValor(id, JSON.stringify(valores));
+    };
+
+    asignarLista('mapeoGruposCodigo', mapeoGrupos.codigo);
+    asignarLista('mapeoGruposAsignatura', mapeoGrupos.asignatura);
+    asignarLista('mapeoGruposSecciones', mapeoGrupos.secciones);
+    asignarLista('mapeoGruposAlumnos', mapeoGrupos.alumnos);
 }
 
 // Barra de pestañas + paneles. Se ocultan por clase porque el overlay usa
@@ -2905,34 +3681,35 @@ async function restablecerAjustesDesdeModal() {
 
     const ajustesPorDefecto = normalizarAjustes(AJUSTES_POR_DEFECTO);
     const mapeoPorDefecto = normalizarMapeoInsumos(MAPEO_POR_DEFECTO);
+    const mapeoGruposPorDefecto = normalizarMapeoGrupos(MAPEO_GRUPOS_POR_DEFECTO);
 
     try {
         await Promise.all([
             invoke('guardar_ajustes_procesamiento', { ajustes: ajustesPorDefecto }),
             invoke('guardar_mapeo_insumos', { mapeo: mapeoPorDefecto }),
+            invoke('guardar_mapeo_grupos', { mapeo: mapeoGruposPorDefecto }),
             invoke('guardar_vista_compacta', { activa: false }),
-            invoke('guardar_vista_compacta_grupos', { activa: false }),
             invoke('guardar_grupos_por_pagina', { cantidad: GRUPOS_POR_PAGINA_POR_DEFECTO })
         ]);
 
         ajustesProcesamiento = ajustesPorDefecto;
         mapeoInsumos = mapeoPorDefecto;
+        mapeoGrupos = mapeoGruposPorDefecto;
         vistaCompactaGuardada = false;
-        vistaCompactaGruposGuardada = false;
         gruposPorPaginaGuardado = GRUPOS_POR_PAGINA_POR_DEFECTO;
         volcarAjustesEnModal();
         volcarMapeoEnModal();
+        volcarMapeoGruposEnModal();
 
         // El tema, el formato y la vista compacta vuelven con el resto.
         formatoNumerosVista = null;
         aplicarTema(ajustesProcesamiento.tema);
         reformatearCantidadesTabla();
         aplicarVistaCompacta(false);
-        aplicarVistaCompactaGrupos(false);
         aplicarGruposPorPagina(GRUPOS_POR_PAGINA_POR_DEFECTO);
 
         await window.__TAURI__.dialog.message(
-            'Los ajustes generales y el mapeo de insumos volvieron a sus valores por defecto.',
+            'Los ajustes generales y los mapeos de insumos y grupos volvieron a sus valores por defecto.',
             { title: 'Ajustes restablecidos', kind: 'info' }
         );
     } catch (error) {
@@ -2948,11 +3725,9 @@ async function guardarAjustesDesdeModal() {
     const guardarBtn = document.getElementById('btnGuardarAjustes');
     const nuevosAjustes = leerAjustesDesdeModal();
     const nuevoMapeo = leerMapeoDesdeModal();
+    const nuevoMapeoGrupos = leerMapeoGruposDesdeModal();
     const nuevaVistaCompacta = Boolean(
         document.getElementById('ajusteVistaCompacta')?.checked
-    );
-    const nuevaVistaCompactaGrupos = Boolean(
-        document.getElementById('ajusteVistaCompactaGrupos')?.checked
     );
     const nuevosGruposPorPagina = normalizarGruposPorPagina(
         document.getElementById('ajusteGruposPorPagina')?.value
@@ -2971,6 +3746,17 @@ async function guardarAjustesDesdeModal() {
         return;
     }
 
+    const faltantesGrupos = faltantesMapeoGrupos(nuevoMapeoGrupos);
+    if (faltantesGrupos.length > 0) {
+        await window.__TAURI__.dialog.message(
+            'No se puede guardar el Mapeo de Grupos porque falta configuración obligatoria:\n\n- '
+                + faltantesGrupos.join('\n- ')
+                + '\n\nAgrega al menos un sinónimo en cada columna.',
+            { title: 'Revisa el Mapeo de Grupos', kind: 'warning' }
+        );
+        return;
+    }
+
     if (guardarBtn) guardarBtn.disabled = true;
 
     try {
@@ -2978,15 +3764,15 @@ async function guardarAjustesDesdeModal() {
         await Promise.all([
             invoke('guardar_ajustes_procesamiento', { ajustes: nuevosAjustes }),
             invoke('guardar_mapeo_insumos', { mapeo: nuevoMapeo }),
+            invoke('guardar_mapeo_grupos', { mapeo: nuevoMapeoGrupos }),
             invoke('guardar_vista_compacta', { activa: nuevaVistaCompacta }),
-            invoke('guardar_vista_compacta_grupos', { activa: nuevaVistaCompactaGrupos }),
             invoke('guardar_grupos_por_pagina', { cantidad: nuevosGruposPorPagina })
         ]);
 
         ajustesProcesamiento = nuevosAjustes;
         mapeoInsumos = nuevoMapeo;
+        mapeoGrupos = nuevoMapeoGrupos;
         vistaCompactaGuardada = nuevaVistaCompacta;
-        vistaCompactaGruposGuardada = nuevaVistaCompactaGrupos;
         gruposPorPaginaGuardado = nuevosGruposPorPagina;
 
         // Lo previsualizado pasa a ser el estado persistido.
@@ -3107,7 +3893,7 @@ async function abrirAjustesProcesamiento() {
         })
     );
 
-    // Apariencia: interruptores lado a lado (el tercero hace wrap).
+    // Apariencia: interruptores lado a lado.
     const gridApariencia = document.createElement('div');
     gridApariencia.className = 'settings-grid';
     gridApariencia.append(
@@ -3128,15 +3914,6 @@ async function abrirAjustesProcesamiento() {
             pista: 'Muestra la lista de archivos en una sola línea, con el nombre truncado.',
             // Previsualización inmediata; al cerrar sin guardar se revierte.
             onChange: (marcado) => aplicarVistaCompacta(marcado)
-        }),
-        crearToggleAjuste({
-            id: 'ajusteVistaCompactaGrupos',
-            etiqueta: 'Vista compacta de grupos',
-            marcado: vistaCompactaGruposActiva,
-            texto: 'Activada',
-            pista: 'Muestra cada grupo en una sola línea, con el nombre truncado. Pasa el mouse por encima para verlo completo.',
-            // Previsualización inmediata; al cerrar sin guardar se revierte.
-            onChange: (marcado) => aplicarVistaCompactaGrupos(marcado)
         })
     );
 
@@ -3273,6 +4050,51 @@ async function abrirAjustesProcesamiento() {
         gridLecturaMapeo
     );
 
+    // --- Pestaña "Mapeo de Grupos" ---
+    const notaMapeoGrupos = document.createElement('p');
+    notaMapeoGrupos.className = 'settings-note';
+    notaMapeoGrupos.textContent = 'Estos sinónimos definen qué encabezados del Excel se usan al importar grupos. Se comparan sin distinguir mayúsculas ni tildes.';
+
+    const seccionMapeoGrupos = seccionAjustes(
+        'Columnas de importación de grupos',
+        crearEditorSinonimosGrupo({
+            id: 'mapeoGruposCodigo',
+            titulo: 'Columna de Código',
+            valores: mapeoGrupos.codigo,
+            valoresPorDefecto: MAPEO_GRUPOS_POR_DEFECTO.codigo,
+            placeholder: 'ej. cod',
+            pista: 'Encabezados que identifican la columna del código del grupo.',
+            requerida: true
+        }),
+        crearEditorSinonimosGrupo({
+            id: 'mapeoGruposAsignatura',
+            titulo: 'Columna de Asignatura',
+            valores: mapeoGrupos.asignatura,
+            valoresPorDefecto: MAPEO_GRUPOS_POR_DEFECTO.asignatura,
+            placeholder: 'ej. materia',
+            pista: 'Encabezados que identifican la asignatura o materia.',
+            requerida: true
+        }),
+        crearEditorSinonimosGrupo({
+            id: 'mapeoGruposSecciones',
+            titulo: 'Columna de Secciones',
+            valores: mapeoGrupos.secciones,
+            valoresPorDefecto: MAPEO_GRUPOS_POR_DEFECTO.secciones,
+            placeholder: 'ej. seccion',
+            pista: 'Encabezados de la cantidad de secciones (por ejemplo "5D / 2V").',
+            requerida: true
+        }),
+        crearEditorSinonimosGrupo({
+            id: 'mapeoGruposAlumnos',
+            titulo: 'Columna de Alumnos',
+            valores: mapeoGrupos.alumnos,
+            valoresPorDefecto: MAPEO_GRUPOS_POR_DEFECTO.alumnos,
+            placeholder: 'ej. estudiantes',
+            pista: 'Encabezados de la cantidad de alumnos por sección.',
+            requerida: true
+        })
+    );
+
     // --- Pestaña "Exportación" ---
     const gridColumnas = document.createElement('div');
     gridColumnas.className = 'settings-check-grid';
@@ -3332,7 +4154,7 @@ async function abrirAjustesProcesamiento() {
 
     const aviso = document.createElement('p');
     aviso.className = 'settings-note';
-    aviso.textContent = 'Los ajustes generales y el mapeo de insumos se guardan de forma independiente.';
+    aviso.textContent = 'Los ajustes generales, el mapeo de insumos y el mapeo de grupos se guardan de forma independiente.';
 
     const pestanas = crearPestanasAjustes([
         {
@@ -3350,6 +4172,11 @@ async function abrirAjustesProcesamiento() {
                 seccionUnidadesMapeo,
                 seccionLecturaMapeo
             ]
+        },
+        {
+            id: 'mapeoGrupos',
+            etiqueta: 'Mapeo de Grupos',
+            contenido: [notaMapeoGrupos, seccionMapeoGrupos]
         },
         {
             id: 'exportacion',
@@ -3414,9 +4241,37 @@ async function cargarArchivosRecientes() {
     const fileList = document.getElementById('fileList');
     if (!fileList) return;
 
+    // La lista se repinta entera al agregar o quitar archivos, y el estado de
+    // selección vive en las propias casillas. Antes de vaciarla se recuerda qué
+    // archivos estaban marcados (y qué hojas) para volver a marcarlos después.
+    const seleccionPrevia = new Map();
+
+    fileList.querySelectorAll('.excel-file-details').forEach(detalle => {
+        const ruta = detalle.dataset.ruta;
+        const chkFile = detalle.querySelector('.chk-file');
+        if (!ruta || !chkFile) return;
+
+        const hojasMarcadas = Array.from(detalle.querySelectorAll('.chk-sheet'))
+            .filter(chk => chk.checked)
+            .map(chk => chk.dataset.hoja);
+
+        if (chkFile.checked || chkFile.indeterminate || hojasMarcadas.length > 0) {
+            seleccionPrevia.set(ruta, {
+                marcado: chkFile.checked,
+                indeterminado: chkFile.indeterminate,
+                hojas: hojasMarcadas
+            });
+        }
+    });
+
     try {
         const archivos = await invoke('obtener_archivos_recientes');
         fileList.innerHTML = '';
+
+        // Lecturas de hojas lanzadas para restaurar selecciones. Se esperan
+        // antes de recalcular el badge: así no parpadea a 0 al agregar un
+        // archivo mientras las casillas de hojas todavía se están recreando.
+        const cargasSeleccion = [];
 
         archivos.forEach(archivo => {
             const detalles = document.createElement('details');
@@ -3453,28 +4308,20 @@ async function cargarArchivosRecientes() {
             const nombreElemento = detalles.querySelector('.file-name');
             if (nombreElemento) nombreElemento.title = nombreArchivo;
 
-            // Menú de contexto (click derecho) para las opciones del archivo
+            // Menú de contexto (click derecho) del archivo. Ya no hay vínculo a
+            // nivel de archivo: las acciones de grupo viven en cada hoja.
             detalles.addEventListener('contextmenu', (evento) => {
                 evento.preventDefault();
                 evento.stopPropagation();
 
-                const ruta = detalles.dataset.ruta;
-                const gruposVinculados = Array.from(gruposDeArchivo(ruta))
-                    .sort((a, b) => a.localeCompare(b, 'es'));
-
                 abrirMenuContextual(evento.clientX, evento.clientY, [
                     {
-                        label: 'Desvincular grupo',
+                        label: 'Vincular hojas…',
                         icon: '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
-                        // Sin vinculaciones el ítem se muestra, pero deshabilitado
-                        disabled: gruposVinculados.length === 0,
-                        title: gruposVinculados.length === 0
-                            ? 'Este archivo no tiene grupos vinculados'
-                            : 'Quitar la vinculación con uno de sus grupos',
-                        submenu: gruposVinculados.map(nombreGrupo => ({
-                            label: nombreGrupo,
-                            onClick: () => desvincularArchivoDeGrupo(ruta, nombreGrupo)
-                        }))
+                        onClick: () => abrirModalVincular({
+                            ruta: archivo.ruta,
+                            soloRuta: true
+                        })
                     },
                     {
                         label: 'Eliminar',
@@ -3489,14 +4336,35 @@ async function cargarArchivosRecientes() {
             let hojasCargadas = false;
             let promesaCarga = null;
 
+            // Restaura la selección que tenía este archivo antes del repintado.
+            // Se asigna la propiedad directamente y no se dispara `change`, así
+            // agregar un archivo no vuelve a procesar lo que ya estaba marcado.
+            const seleccionArchivo = seleccionPrevia.get(archivo.ruta);
+            if (seleccionArchivo) {
+                chkFile.checked = seleccionArchivo.marcado;
+                chkFile.indeterminate = seleccionArchivo.indeterminado;
+
+                // El repintado borra las casillas de hojas. Si el archivo tenía
+                // hojas marcadas se leen en segundo plano (sin abrir el
+                // acordeón) para que el badge del panel no baje a 0 y la
+                // selección siga siendo válida al procesar.
+                if (seleccionArchivo.hojas.length > 0) {
+                    cargasSeleccion.push(cargarHojas());
+                }
+            }
+
             async function cargarHojas() {
                 if (hojasCargadas) return;
                 if (promesaCarga) return promesaCarga;
 
                 promesaCarga = (async () => {
                     try {
-                        const hojas = await invoke('obtener_hojas_excel', { ruta: archivo.ruta });
+                        const hojas = await obtenerHojasDeArchivo(archivo.ruta);
                         listaHojas.innerHTML = '';
+
+                        // Hojas renombradas/eliminadas en el Excel no deben
+                        // conservar vinculaciones huérfanas.
+                        depurarVinculacionesDeArchivo(archivo.ruta, hojas);
 
                         hojas.forEach(nombreHoja => {
                             const liHoja = document.createElement('li');
@@ -3504,12 +4372,63 @@ async function cargarArchivosRecientes() {
 
                             liHoja.innerHTML = `
                                 <label class="sheet-item-label">
-                                    <input type="checkbox" class="chk-sheet" data-hoja="${nombreHoja}">
-                                    <span class="sheet-name">${nombreHoja}</span>
+                                    <span class="sheet-sections-count"></span>
+                                    <input type="checkbox" class="chk-sheet">
+                                    <span class="sheet-name"></span>
                                 </label>
                             `;
 
+                            // textContent: los nombres de hoja vienen del Excel
+                            // y no deben interpretarse como HTML.
                             const chkSheet = liHoja.querySelector('.chk-sheet');
+                            chkSheet.dataset.hoja = nombreHoja;
+                            liHoja.querySelector('.sheet-name').textContent = nombreHoja;
+
+                            // Multiplicador de ESTA hoja: suma las secciones de
+                            // sus grupos vinculados. Se actualiza en sitio cuando
+                            // cambian las vinculaciones; el nombre del grupo no
+                            // se muestra en esta lista.
+                            aplicarMultiplicadorHoja(
+                                liHoja.querySelector('.sheet-sections-count'),
+                                multiplicadorSeccionesDeHoja(archivo.ruta, nombreHoja)
+                            );
+
+                            // Menú contextual de la hoja: vincular/desvincular
+                            // actúa solo sobre esta hoja, nunca sobre el archivo.
+                            liHoja.addEventListener('contextmenu', (evento) => {
+                                evento.preventDefault();
+                                evento.stopPropagation();
+
+                                const gruposHoja = Array.from(
+                                    gruposDeHoja(archivo.ruta, nombreHoja)
+                                ).sort((a, b) => a.localeCompare(b, 'es'));
+
+                                abrirMenuContextual(evento.clientX, evento.clientY, [
+                                    {
+                                        label: 'Vincular a grupo…',
+                                        onClick: () => abrirModalVincular({
+                                            ruta: archivo.ruta,
+                                            hoja: nombreHoja
+                                        })
+                                    },
+                                    {
+                                        label: 'Desvincular grupo',
+                                        disabled: gruposHoja.length === 0,
+                                        title: gruposHoja.length === 0
+                                            ? 'Esta hoja no tiene grupos vinculados'
+                                            : 'Quitar la vinculación de esta hoja con uno de sus grupos',
+                                        submenu: gruposHoja.map(nombreGrupo => ({
+                                            label: nombreGrupo,
+                                            onClick: () => desvincularHojaDeGrupo(
+                                                archivo.ruta,
+                                                nombreHoja,
+                                                nombreGrupo
+                                            )
+                                        }))
+                                    }
+                                ], liHoja);
+                            });
+
                             chkSheet.addEventListener('change', () => {
                                 const todasLasHojas = Array.from(detalles.querySelectorAll('.chk-sheet'));
                                 const todasMarcadas = todasLasHojas.every(chk => chk.checked);
@@ -3517,6 +4436,10 @@ async function cargarArchivosRecientes() {
 
                                 chkFile.checked = todasMarcadas;
                                 chkFile.indeterminate = algunaMarcada && !todasMarcadas;
+
+                                // El badge del panel se actualiza con cada
+                                // casilla, sin esperar al procesamiento.
+                                actualizarIndicadorHojasSeleccionadas();
 
                                 // Si se desmarca, se utiliza la función debounced de desmarcado;
                                 // si se marca, se mantiene la lógica de añadir hojas.
@@ -3532,6 +4455,24 @@ async function cargarArchivosRecientes() {
 
                             listaHojas.appendChild(liHoja);
                         });
+
+                        // Si el archivo ya tenía hojas marcadas antes del
+                        // repintado, se vuelven a marcar al terminar de leerlas.
+                        // Se respeta lo que el usuario haya hecho mientras tanto:
+                        // si ya desmarcó el archivo, no se recuperan sus hojas.
+                        if (
+                            seleccionArchivo
+                            && (chkFile.checked || chkFile.indeterminate)
+                            && seleccionArchivo.hojas.length > 0
+                        ) {
+                            const marcadas = new Set(seleccionArchivo.hojas);
+                            listaHojas.querySelectorAll('.chk-sheet').forEach(chk => {
+                                if (marcadas.has(chk.dataset.hoja)) chk.checked = true;
+                            });
+                        }
+
+                        // Las hojas restauradas también cuentan para el badge.
+                        actualizarIndicadorHojasSeleccionadas();
 
                         hojasCargadas = true;
                     } catch (error) {
@@ -3554,6 +4495,7 @@ async function cargarArchivosRecientes() {
                 if (!hojasCargadas && !isChecked) {
                     chkFile.indeterminate = false;
                     desmarcarHoja();
+                    actualizarIndicadorHojasSeleccionadas();
                     return;
                 }
 
@@ -3569,6 +4511,8 @@ async function cargarArchivosRecientes() {
                 });
 
                 chkFile.indeterminate = false;
+
+                actualizarIndicadorHojasSeleccionadas();
 
                 // Al desmarcar el lote completo se usa desmarcarHoja (debounced);
                 // al marcarlo se mantiene la selección habitual.
@@ -3588,177 +4532,409 @@ async function cargarArchivosRecientes() {
             fileList.appendChild(detalles);
         });
 
-        // Refresca los tags de grupos cuando la lista se vuelve a pintar
-        aplicarTagsVinculacion();
+        // Espera a que se recreen las casillas de hojas seleccionadas antes
+        // de fijar el conteo definitivo del panel.
+        await Promise.allSettled(cargasSeleccion);
+
+        // Refresca el multiplicador por hoja al repintar la lista.
+        actualizarPanelVinculaciones();
         actualizarBotonEliminarSeleccionados();
+        actualizarIndicadorHojasSeleccionadas();
     } catch (error) {
         console.error("Error al cargar archivos recientes:", error);
     }
 }
 
-// --- VINCULACIÓN ARCHIVOS ↔ GRUPOS (N a N) ---
-// Estructura en memoria: Map<ruta_absoluta, Set<nombre_grupo>>.
-// El nombre del grupo se usa como id natural porque grupos.json los indexa
-// como "grupo_{nombre}" y no existe un id numérico estable.
-const vinculacionesArchivosGrupos = new Map();
+// --- VINCULACIÓN HOJAS ↔ GRUPOS (N a N) ---
+// Tripleta persistida: { archivoId: ruta, hojaId: nombre de hoja, grupoId }.
+// En memoria se anida para no construir claves con separadores:
+// Map<ruta, Map<nombre_hoja, Set<nombre_grupo>>>. El nombre del grupo se usa
+// como id natural porque grupos.json los indexa como "grupo_{nombre}".
+const vinculacionesHojasGrupos = new Map();
+
+// Caché de nombres de hoja por archivo. La comparten el acordeón, el modal y
+// la migración de datos antiguos para no abrir el Excel varias veces.
+const hojasPorArchivoCache = new Map();
+const promesasHojasPorArchivo = new Map();
 
 // Promesa de la carga inicial y cola de escrituras (igual que los colores)
 let vinculacionesCargadasPromise = null;
 let persistenciaVinculacionesCola = Promise.resolve();
 
-function gruposDeArchivo(ruta) {
-    return vinculacionesArchivosGrupos.get(ruta) || new Set();
+// Clave interna (no persistida) para identificar una hoja entre archivos. El
+// separador de unidad no aparece en rutas ni en nombres de hoja de Excel.
+function claveHojaVinculacion(ruta, nombreHoja) {
+    return `${ruta}\u001f${nombreHoja}`;
 }
 
-async function cargarVinculaciones() {
-    try {
-        const guardadas = await invoke('obtener_vinculaciones');
-        vinculacionesArchivosGrupos.clear();
+function gruposDeHoja(ruta, nombreHoja) {
+    if (!ruta || !nombreHoja) return new Set();
+    return vinculacionesHojasGrupos.get(ruta)?.get(nombreHoja) || new Set();
+}
 
-        Object.entries(guardadas || {}).forEach(([ruta, grupos]) => {
-            if (!ruta || !Array.isArray(grupos)) return;
+// ¿Queda algún par hoja → grupo en memoria? Se usa para habilitar la acción
+// "Desvincular todos" solo cuando hay algo que borrar.
+function hayVinculacionesHojas() {
+    for (const hojas of vinculacionesHojasGrupos.values()) {
+        for (const grupos of hojas.values()) {
+            if (grupos && grupos.size > 0) return true;
+        }
+    }
+    return false;
+}
+
+function asegurarGruposHoja(ruta, nombreHoja) {
+    if (!ruta || !nombreHoja) return new Set();
+
+    let hojas = vinculacionesHojasGrupos.get(ruta);
+    if (!hojas) {
+        hojas = new Map();
+        vinculacionesHojasGrupos.set(ruta, hojas);
+    }
+
+    let grupos = hojas.get(nombreHoja);
+    if (!grupos) {
+        grupos = new Set();
+        hojas.set(nombreHoja, grupos);
+    }
+
+    return grupos;
+}
+
+// Lee las hojas de un archivo con caché. `refrescar` fuerza una lectura nueva
+// (la usa la migración, que necesita el listado actual del disco).
+async function obtenerHojasDeArchivo(ruta, { refrescar = false } = {}) {
+    if (!ruta) return [];
+
+    if (!refrescar && hojasPorArchivoCache.has(ruta)) {
+        return hojasPorArchivoCache.get(ruta);
+    }
+
+    if (promesasHojasPorArchivo.has(ruta)) {
+        return promesasHojasPorArchivo.get(ruta);
+    }
+
+    const promesa = (async () => {
+        try {
+            const hojas = await invoke('obtener_hojas_excel', { ruta });
+            const lista = Array.isArray(hojas)
+                ? hojas.filter(nombre => typeof nombre === 'string' && nombre.trim() !== '')
+                : [];
+            hojasPorArchivoCache.set(ruta, lista);
+            return lista;
+        } finally {
+            promesasHojasPorArchivo.delete(ruta);
+        }
+    })();
+
+    promesasHojasPorArchivo.set(ruta, promesa);
+    return promesa;
+}
+
+// Forma persistida: { ruta: { hoja: [grupos] } }.
+function serializarVinculacionesHojas() {
+    const datos = {};
+
+    vinculacionesHojasGrupos.forEach((hojas, ruta) => {
+        const hojasDatos = {};
+
+        hojas.forEach((grupos, nombreHoja) => {
+            if (!grupos || grupos.size === 0) return;
+            hojasDatos[nombreHoja] = Array.from(grupos)
+                .sort((a, b) => a.localeCompare(b, 'es'));
+        });
+
+        if (Object.keys(hojasDatos).length > 0) datos[ruta] = hojasDatos;
+    });
+
+    return datos;
+}
+
+function normalizarVinculacionesHojas(datos) {
+    const mapa = new Map();
+
+    Object.entries(datos || {}).forEach(([ruta, hojas]) => {
+        if (!ruta || !hojas || typeof hojas !== 'object' || Array.isArray(hojas)) return;
+
+        const hojasLimpias = new Map();
+
+        Object.entries(hojas).forEach(([nombreHoja, grupos]) => {
+            if (!nombreHoja || !Array.isArray(grupos)) return;
 
             const limpios = grupos.filter(nombre =>
                 typeof nombre === 'string' && nombre.trim() !== ''
             );
 
-            // Solo se conservan archivos con al menos un grupo vinculado
-            if (limpios.length > 0) {
-                vinculacionesArchivosGrupos.set(ruta, new Set(limpios));
-            }
+            if (limpios.length > 0) hojasLimpias.set(nombreHoja, new Set(limpios));
         });
 
+        if (hojasLimpias.size > 0) mapa.set(ruta, hojasLimpias);
+    });
+
+    return mapa;
+}
+
+// Migración de la estructura antigua archivo → grupos: se asigna el mismo
+// conjunto de grupos a todas las hojas del archivo. Si el archivo ya tiene
+// datos con la estructura nueva, se respeta lo nuevo y no se pisa.
+async function migrarVinculacionesLegacy(legacyArchivos) {
+    const entradas = Object.entries(legacyArchivos || {});
+    if (entradas.length === 0) return 0;
+
+    let migradas = 0;
+
+    for (const [ruta, grupos] of entradas) {
+        if (!ruta || !Array.isArray(grupos)) continue;
+
+        const limpios = grupos.filter(nombre =>
+            typeof nombre === 'string' && nombre.trim() !== ''
+        );
+        if (limpios.length === 0) continue;
+
+        if (vinculacionesHojasGrupos.has(ruta)) continue;
+
+        try {
+            const hojas = await obtenerHojasDeArchivo(ruta, { refrescar: true });
+            if (hojas.length === 0) continue;
+
+            const hojasVinculadas = new Map();
+            hojas.forEach(nombreHoja => {
+                hojasVinculadas.set(nombreHoja, new Set(limpios));
+            });
+
+            vinculacionesHojasGrupos.set(ruta, hojasVinculadas);
+            migradas++;
+        } catch (error) {
+            // Un archivo borrado o inaccesible no impide migrar el resto.
+            console.warn(
+                `[vinculaciones] No se pudo migrar la vinculación antigua de ${ruta}:`,
+                error
+            );
+        }
+    }
+
+    if (migradas > 0) {
+        try {
+            await invoke('guardar_vinculaciones', {
+                vinculaciones: serializarVinculacionesHojas()
+            });
+            console.log(
+                `[vinculaciones] Migradas ${migradas} vinculación(es) de archivo a sus hojas.`
+            );
+        } catch (error) {
+            console.error('No se pudo guardar la migración de vinculaciones:', error);
+        }
+    }
+
+    // Distribuida o no, la estructura antigua ya no debe volver a aplicarse:
+    // de lo contrario reaparecerían grupos que el usuario quitó después.
+    try {
+        await invoke('descartar_vinculaciones_legacy');
+    } catch (error) {
+        console.warn('No se pudo descartar la estructura antigua de vinculaciones:', error);
+    }
+
+    return migradas;
+}
+
+async function cargarVinculaciones() {
+    try {
+        const guardadas = await invoke('obtener_vinculaciones');
+        vinculacionesHojasGrupos.clear();
+
+        if (
+            guardadas
+            && typeof guardadas === 'object'
+            && guardadas.hojas
+            && typeof guardadas.hojas === 'object'
+            && !Array.isArray(guardadas.hojas)
+        ) {
+            normalizarVinculacionesHojas(guardadas.hojas).forEach((hojas, ruta) => {
+                vinculacionesHojasGrupos.set(ruta, hojas);
+            });
+
+            await migrarVinculacionesLegacy(guardadas.legacyArchivos);
+        } else if (guardadas && typeof guardadas === 'object') {
+            // Compatibilidad con la primera versión del backend, que devolvía
+            // directamente el mapa { ruta: [grupos] }.
+            await migrarVinculacionesLegacy(guardadas);
+        }
+
+        const totalHojas = Array.from(vinculacionesHojasGrupos.values())
+            .reduce((total, hojas) => total + hojas.size, 0);
+
         console.log(
-            `[vinculaciones] Cargadas ${vinculacionesArchivosGrupos.size} ` +
-            `vinculación(es) archivo-grupo.`
+            `[vinculaciones] Cargadas ${totalHojas} vinculación(es) hoja-grupo.`
         );
     } catch (error) {
         console.error('No se pudieron cargar las vinculaciones:', error);
-    } finally {
-        aplicarTagsVinculacion();
     }
 
-    return vinculacionesArchivosGrupos;
+    actualizarPanelVinculaciones();
+    return vinculacionesHojasGrupos;
 }
 
 // Persiste el mapa completo en background. Espera la carga inicial para no
 // sobrescribir con un mapa vacío y encola las escrituras para que no se pisen.
 function persistirVinculaciones() {
     const guardar = () => {
-        const datos = {};
-
-        vinculacionesArchivosGrupos.forEach((grupos, ruta) => {
-            if (grupos.size > 0) {
-                datos[ruta] = Array.from(grupos).sort((a, b) => a.localeCompare(b, 'es'));
-            }
+        return invoke('guardar_vinculaciones', {
+            vinculaciones: serializarVinculacionesHojas()
+        }).catch(error => {
+            console.error('No se pudieron guardar las vinculaciones:', error);
         });
-
-        return invoke('guardar_vinculaciones', { vinculaciones: datos })
-            .catch(error => {
-                console.error('No se pudieron guardar las vinculaciones:', error);
-            });
     };
 
     persistenciaVinculacionesCola = persistenciaVinculacionesCola
         .then(() => vinculacionesCargadasPromise || Promise.resolve())
         .then(guardar);
+
+    // Se devuelve la promesa encadenada para que una acción pueda esperar a que
+    // el store tenga el estado definitivo (p. ej. el aviso de "Desvincular
+    // todos"). El resto de llamadas siguen ignorándola.
+    return persistenciaVinculacionesCola;
 }
 
-// Vincula o desvincula un archivo de un grupo (N a N)
-function alternarVinculacion(ruta, nombreGrupo) {
-    if (!ruta || !nombreGrupo) return;
+// Vincula o desvincula UNA HOJA de un grupo (N a N). `archivoId` + `hojaId`
+// forman la clave de la hoja; `grupoId` es el nombre del grupo.
+function alternarVinculacionHoja(archivoId, hojaId, grupoId) {
+    if (!archivoId || !hojaId || !grupoId) return;
 
-    let grupos = vinculacionesArchivosGrupos.get(ruta);
+    const grupos = asegurarGruposHoja(archivoId, hojaId);
 
-    if (!grupos) {
-        grupos = new Set();
-        vinculacionesArchivosGrupos.set(ruta, grupos);
-    }
-
-    if (grupos.has(nombreGrupo)) {
-        grupos.delete(nombreGrupo);
+    if (grupos.has(grupoId)) {
+        grupos.delete(grupoId);
     } else {
-        grupos.add(nombreGrupo);
+        grupos.add(grupoId);
     }
 
-    if (grupos.size === 0) vinculacionesArchivosGrupos.delete(ruta);
+    if (grupos.size === 0) {
+        const hojas = vinculacionesHojasGrupos.get(archivoId);
+        if (hojas) {
+            hojas.delete(hojaId);
+            if (hojas.size === 0) vinculacionesHojasGrupos.delete(archivoId);
+        }
+    }
 
-    aplicarTagsVinculacion();
     persistirVinculaciones();
+    actualizarPanelVinculaciones();
 }
 
-// Desvincula un archivo de UN grupo concreto sin tocar el resto de sus
-// vinculaciones ni el archivo Excel. Persiste y refresca los chips de la lista.
-function desvincularArchivoDeGrupo(ruta, nombreGrupo) {
-    if (!ruta || !nombreGrupo) return false;
+// Desvincula una hoja concreta de UN grupo sin tocar el resto de sus vínculos
+// ni el archivo Excel. Persiste el cambio.
+function desvincularHojaDeGrupo(archivoId, hojaId, grupoId) {
+    if (!archivoId || !hojaId || !grupoId) return false;
 
-    const grupos = vinculacionesArchivosGrupos.get(ruta);
-    if (!grupos || !grupos.has(nombreGrupo)) return false;
+    const hojas = vinculacionesHojasGrupos.get(archivoId);
+    const grupos = hojas?.get(hojaId);
+    if (!grupos || !grupos.has(grupoId)) return false;
 
-    grupos.delete(nombreGrupo);
+    grupos.delete(grupoId);
 
-    // Un archivo sin grupos no se guarda como entrada vacía
-    if (grupos.size === 0) vinculacionesArchivosGrupos.delete(ruta);
+    if (grupos.size === 0) hojas.delete(hojaId);
+    if (hojas.size === 0) vinculacionesHojasGrupos.delete(archivoId);
 
-    aplicarTagsVinculacion();
     persistirVinculaciones();
+    actualizarPanelVinculaciones();
 
-    console.log(`[vinculaciones] Archivo desvinculado de "${nombreGrupo}": ${ruta}`);
+    console.log(
+        `[vinculaciones] Hoja «${hojaId}» desvinculada de "${grupoId}": ${archivoId}`
+    );
     return true;
 }
 
-// Al eliminar un grupo, se quitan sus referencias de todos los archivos
+// Al eliminar un grupo, se quitan sus referencias de todas las hojas.
 function quitarGrupoDeVinculaciones(nombreGrupo) {
     if (!nombreGrupo) return;
 
     let huboCambios = false;
 
-    vinculacionesArchivosGrupos.forEach((grupos, ruta) => {
-        if (grupos.delete(nombreGrupo)) huboCambios = true;
-        if (grupos.size === 0) vinculacionesArchivosGrupos.delete(ruta);
+    vinculacionesHojasGrupos.forEach((hojas, ruta) => {
+        hojas.forEach((grupos, nombreHoja) => {
+            if (grupos.delete(nombreGrupo)) huboCambios = true;
+            if (grupos.size === 0) hojas.delete(nombreHoja);
+        });
+
+        if (hojas.size === 0) vinculacionesHojasGrupos.delete(ruta);
     });
 
     if (huboCambios) {
-        aplicarTagsVinculacion();
         persistirVinculaciones();
+        actualizarPanelVinculaciones();
     }
 }
 
-// Refleja las vinculaciones en la columna izquierda: chips con los grupos
-// bajo el nombre del archivo (máximo 2 visibles + contador).
-function aplicarTagsVinculacion() {
+// Elimina vinculaciones de hojas que ya no existen en el archivo (hoja
+// renombrada o eliminada en el Excel).
+function depurarVinculacionesDeArchivo(ruta, hojasActuales) {
+    const hojas = vinculacionesHojasGrupos.get(ruta);
+    if (!hojas) return false;
+
+    const vigentes = new Set(hojasActuales || []);
+    let cambios = false;
+
+    hojas.forEach((_, nombreHoja) => {
+        if (!vigentes.has(nombreHoja)) {
+            hojas.delete(nombreHoja);
+            cambios = true;
+        }
+    });
+
+    if (hojas.size === 0) vinculacionesHojasGrupos.delete(ruta);
+
+    if (cambios) {
+        persistirVinculaciones();
+        console.log(`[vinculaciones] Se quitaron hojas inexistentes de ${ruta}.`);
+    }
+
+    return cambios;
+}
+
+// --- MULTIPLICADOR DE SECCIONES POR HOJA (panel izquierdo) ---
+// Cada hoja suma las secciones de SUS grupos vinculados. El total se calcula
+// con esas mismas secciones (`calcular_total`), así que la cifra coincide con
+// lo que multiplica la hoja en "Calcular vinculados".
+function multiplicadorSeccionesDeHoja(ruta, nombreHoja) {
+    const nombresGrupos = gruposDeHoja(ruta, nombreHoja);
+    if (nombresGrupos.size === 0) return null;
+
+    let secciones = 0;
+    nombresGrupos.forEach(nombre => {
+        const grupo = gruposGuardadosCache.find(g => g?.nombre === nombre);
+        if (Array.isArray(grupo?.secciones)) secciones += grupo.secciones.length;
+    });
+
+    return secciones > 0 ? secciones : null;
+}
+
+function aplicarMultiplicadorHoja(nodo, valor) {
+    if (!nodo) return;
+
+    const texto = valor === null ? '—' : String(valor);
+    const etiqueta = valor === null
+        ? 'Sin grupo vinculado con secciones'
+        : `${valor} ${valor === 1 ? 'sección' : 'secciones'} en los grupos vinculados`;
+
+    nodo.textContent = texto;
+    nodo.classList.toggle('empty', valor === null);
+    nodo.title = etiqueta;
+    nodo.setAttribute('aria-label', etiqueta);
+}
+
+// Update quirúrgico: recorre las hojas ya renderizadas y actualiza el
+// multiplicador de secciones. No repinta el acordeón ni la lista.
+function actualizarPanelVinculaciones() {
     document.querySelectorAll('#fileList .excel-file-details').forEach(detalles => {
-        const summary = detalles.querySelector('summary.excel-file-summary');
-        if (!summary) return;
+        const ruta = detalles.dataset.ruta;
+        if (!ruta) return;
 
-        summary.querySelector('.excel-file-tags')?.remove();
-
-        const grupos = Array.from(vinculacionesArchivosGrupos.get(detalles.dataset.ruta) || [])
-            .sort((a, b) => a.localeCompare(b, 'es'));
-
-        if (grupos.length === 0) return;
-
-        const contenedor = document.createElement('span');
-        contenedor.className = 'excel-file-tags';
-        contenedor.title = `Grupos: ${grupos.join(', ')}`;
-
-        function crearChip(texto, claseExtra = '', tooltip = texto) {
-            const chip = document.createElement('span');
-            chip.className = `file-group-tag${claseExtra}`;
-            chip.textContent = texto;
-            chip.title = tooltip;
-            // Los chips son informativos: un clic sobre ellos no pliega el archivo
-            chip.addEventListener('click', evento => evento.preventDefault());
-            contenedor.appendChild(chip);
-        }
-
-        grupos.slice(0, 2).forEach(nombre => crearChip(nombre));
-
-        if (grupos.length > 2) {
-            crearChip(`+${grupos.length - 2}`, ' more', grupos.join(', '));
-        }
-
-        summary.appendChild(contenedor);
+        detalles.querySelectorAll('.sheet-item').forEach(item => {
+            const nombreHoja = item.querySelector('.chk-sheet')?.dataset.hoja || '';
+            aplicarMultiplicadorHoja(
+                item.querySelector('.sheet-sections-count'),
+                multiplicadorSeccionesDeHoja(ruta, nombreHoja)
+            );
+        });
     });
 }
 
@@ -3816,7 +4992,7 @@ function construirArchivosPorClave(datosPorArchivo) {
     return archivosPorClave;
 }
 
-// --- CÁLCULO CRUZADO POR VINCULACIONES ARCHIVO -> GRUPO ---
+// --- CÁLCULO CRUZADO POR VINCULACIONES HOJA -> GRUPO ---
 
 // Réplica mínima de la condición que valida Rust en calcular_total:
 // se puede calcular si hay suma de proporciones o de alumnos > 0.
@@ -3842,6 +5018,7 @@ function grupoTieneFactorCalculo(secciones) {
 function mostrarMensajeEnTabla(tbody, mensaje, { error = false } = {}) {
     if (!tbody) return;
 
+    limpiarSeleccionFilas();
     tbody.innerHTML = '';
 
     const fila = document.createElement('tr');
@@ -3864,6 +5041,8 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
             ultimoCalculoVinculado = false;
             const tbody = document.getElementById('tablaConsolidadaBody');
             if (tbody) tbody.innerHTML = '';
+            limpiarSeleccionFilas();
+            actualizarIndicadorHojasProcesadas(0);
             if (!silencioso) {
                 alert('No hay hojas seleccionadas.');
             }
@@ -3900,10 +5079,15 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
 
     let todosLosDatos = [];
     const datosPorArchivo = [];
+    const datosPorHoja = [];
     // Advertencias y errores por archivo/hoja: se muestran al usuario en vez
     // de quedar solo en la consola.
     const advertencias = [];
     const errores = [];
+
+    // Hojas que aportaron filas válidas en esta solicitud. Alimenta el
+    // indicador "X hojas procesadas" de la barra central.
+    let hojasProcesadasTotal = 0;
 
     try {
         for (const [ruta, hojas] of archivos) {
@@ -3934,8 +5118,35 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
                     advertencias.push(`${nombreArchivo}: ${aviso}`);
                 });
 
+                // Si el backend no enviara el campo (versión anterior), se
+                // asume que la solicitud completa se procesó.
+                hojasProcesadasTotal += Number(
+                    resultado?.hojasProcesadas ?? hojas.length
+                ) || 0;
+
                 todosLosDatos = todosLosDatos.concat(datos);
                 datosPorArchivo.push({ ruta, datos });
+
+                // Desglose por hoja: es lo que permite aplicar a cada hoja el
+                // grupo que tiene vinculado, de forma independiente del resto
+                // de hojas del mismo archivo.
+                const detalleHojas = Array.isArray(resultado?.detalleHojas)
+                    ? resultado.detalleHojas
+                    : [];
+
+                detalleHojas.forEach(({ nombre, ingredientes }) => {
+                    if (!nombre || !Array.isArray(ingredientes) || ingredientes.length === 0) {
+                        return;
+                    }
+                    datosPorHoja.push({ ruta, hoja: nombre, datos: ingredientes });
+                });
+
+                if (detalleHojas.length === 0 && datos.length > 0) {
+                    console.warn(
+                        `[vinculaciones] ${nombreArchivo}: el backend no devolvió ` +
+                        'desglose por hoja; el cálculo vinculado no podrá separarlas.'
+                    );
+                }
             } catch (error) {
                 console.error(`Error procesando archivo ${ruta}:`, error);
                 errores.push(`${nombreArchivo}: ${String(error)}`);
@@ -3947,12 +5158,14 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
         if (todosLosDatos.length === 0) {
             ingredientesConsolidados = [];
             ingredientesPorArchivo = [];
+            ingredientesPorHoja = [];
             ultimoCalculoVinculado = false;
 
             const detalle = [...errores, ...advertencias].join('\n');
             const mensaje = detalle || 'No se obtuvieron datos de las hojas seleccionadas.';
 
             mostrarMensajeEnTabla(tbody, mensaje, { error: true });
+            actualizarIndicadorHojasProcesadas(0);
 
             // En autoprocesado (silencioso) no se abre un diálogo por cada
             // pulsación; el mensaje ya queda visible en la tabla.
@@ -4003,9 +5216,13 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
 
         ingredientesConsolidados = nuevosIngredientes;
         ingredientesPorArchivo = datosPorArchivo;
+        ingredientesPorHoja = datosPorHoja;
         ultimoCalculoVinculado = false;
 
         pintarTablaConsolidada(ingredientesConsolidados);
+
+        // Hojas que realmente alimentan la tabla visible.
+        actualizarIndicadorHojasProcesadas(hojasProcesadasTotal);
 
         // Hojas omitidas o columnas no reconocidas: se avisa sin bloquear el
         // resultado que sí se pudo leer.
@@ -4028,11 +5245,13 @@ async function ejecutarProcesamientoHojas(idSolicitud, { silencioso = false } = 
         if (idSolicitud === idSeleccionHojas) {
             ingredientesConsolidados = [];
             ingredientesPorArchivo = [];
+            ingredientesPorHoja = [];
             mostrarMensajeEnTabla(
                 tbody,
                 'No se pudieron consolidar los ingredientes: ' + String(error),
                 { error: true }
             );
+            actualizarIndicadorHojasProcesadas(0);
 
             await window.__TAURI__.dialog.message(
                 'No se pudo consolidar los ingredientes: ' + error,
@@ -4104,8 +5323,8 @@ async function calcularVinculados() {
     // Espera la carga inicial de vinculaciones para no alertar por error
     await (vinculacionesCargadasPromise || Promise.resolve());
 
-    if (vinculacionesArchivosGrupos.size === 0) {
-        alert('No hay archivos vinculados a grupos.');
+    if (vinculacionesHojasGrupos.size === 0) {
+        alert('No hay hojas vinculadas a grupos.');
         return;
     }
 
@@ -4114,8 +5333,8 @@ async function calcularVinculados() {
         return;
     }
 
-    if (ingredientesPorArchivo.length === 0) {
-        alert('No hay información del origen de las filas. Vuelve a procesar las hojas.');
+    if (ingredientesPorHoja.length === 0) {
+        alert('No hay información del origen por hoja. Vuelve a procesar las hojas.');
         return;
     }
 
@@ -4140,61 +5359,78 @@ async function calcularVinculados() {
         );
     });
 
-    // Archivo -> TODOS los grupos válidos a los que está vinculado.
-    // Si está en A y B, se calculará una vez con cada uno y sus resultados
-    // se sumarán (regla de negocio: Opción B - sumatoria).
-    const gruposPorArchivo = new Map();
-    vinculacionesArchivosGrupos.forEach((grupos, ruta) => {
-        const candidatos = Array.from(grupos)
-            .filter(nombre => {
-                const secciones = seccionesPorGrupo.get(nombre);
-                return Boolean(secciones) && grupoTieneFactorCalculo(secciones);
-            })
-            .sort((a, b) => a.localeCompare(b, 'es'));
+    const grupoTieneFactor = nombre => {
+        const secciones = seccionesPorGrupo.get(nombre);
+        return Boolean(secciones) && grupoTieneFactorCalculo(secciones);
+    };
 
-        if (candidatos.length > 0) {
-            gruposPorArchivo.set(ruta, candidatos);
-        }
-    });
+    // Hoja -> TODOS los grupos válidos a los que está vinculada.
+    // Si una hoja está en A y B, se calculará una vez con cada grupo y sus
+    // resultados se sumarán (regla de negocio: Opción B - sumatoria).
+    const hojasPorClave = new Map();
 
-    if (gruposPorArchivo.size === 0) {
-        alert('Las vinculaciones no apuntan a grupos guardados con alumnos o proporciones definidas.');
-        return;
-    }
+    vinculacionesHojasGrupos.forEach((hojas, ruta) => {
+        hojas.forEach((grupos, nombreHoja) => {
+            const candidatos = Array.from(grupos)
+                .filter(grupoTieneFactor)
+                .sort((a, b) => a.localeCompare(b, 'es'));
 
-    // Agrupar archivos por grupo: una sola llamada a calcular_total por grupo.
-    // Un archivo vinculado a varios grupos aparece en el Set de cada uno.
-    const archivosPorGrupo = new Map();
-    gruposPorArchivo.forEach((nombresGrupo, ruta) => {
-        nombresGrupo.forEach(nombreGrupo => {
-            if (!archivosPorGrupo.has(nombreGrupo)) {
-                archivosPorGrupo.set(nombreGrupo, new Set());
-            }
-            archivosPorGrupo.get(nombreGrupo).add(ruta);
+            hojasPorClave.set(
+                claveHojaVinculacion(ruta, nombreHoja),
+                { ruta, hoja: nombreHoja, grupos: candidatos }
+            );
         });
     });
 
-    const datosPorRuta = new Map();
-    ingredientesPorArchivo.forEach(({ ruta, datos }) => {
-        datosPorRuta.set(ruta, Array.isArray(datos) ? datos : []);
+    const hojasCalculables = Array.from(hojasPorClave.values())
+        .filter(item => item.grupos.length > 0);
+
+    if (hojasCalculables.length === 0) {
+        alert('Las hojas vinculadas no apuntan a grupos guardados con alumnos o proporciones definidas.');
+        return;
+    }
+
+    // Agrupar hojas por grupo: una sola llamada a calcular_total por grupo.
+    // Una hoja vinculada a varios grupos aparece en el Set de cada uno.
+    const hojasPorGrupo = new Map();
+    hojasCalculables.forEach(item => {
+        const clave = claveHojaVinculacion(item.ruta, item.hoja);
+
+        item.grupos.forEach(nombreGrupo => {
+            if (!hojasPorGrupo.has(nombreGrupo)) {
+                hojasPorGrupo.set(nombreGrupo, new Set());
+            }
+            hojasPorGrupo.get(nombreGrupo).add(clave);
+        });
     });
 
-    // Total por clave consolidada: cada aporte de archivo se escala con el
-    // factor de CADA grupo al que pertenece y todos los resultados se suman.
-    // (Si un archivo está en A y B, suma cantidad×factor(A) + cantidad×factor(B)).
+    // Datos crudos de cada hoja. Si el mismo id aparece varias veces (por
+    // ejemplo, dos lecturas de la misma hoja), sus filas se suman.
+    const datosPorClaveHoja = new Map();
+    ingredientesPorHoja.forEach(({ ruta, hoja, datos }) => {
+        if (!ruta || !hoja || !Array.isArray(datos) || datos.length === 0) return;
+
+        const clave = claveHojaVinculacion(ruta, hoja);
+        if (!datosPorClaveHoja.has(clave)) datosPorClaveHoja.set(clave, []);
+        datosPorClaveHoja.get(clave).push(...datos);
+    });
+
+    // Total por clave consolidada: cada aporte de hoja se escala con el factor
+    // de CADA grupo al que pertenece y todos los resultados se suman.
+    // (Si una hoja está en A y B, suma cantidad×factor(A) + cantidad×factor(B)).
     const totalesPorClave = new Map();
     const clavesCalculadas = new Set();
+    const hojasUsadas = new Set();
     let gruposCalculados = 0;
-    let archivosUsados = 0;
 
-    for (const [nombreGrupo, rutas] of archivosPorGrupo) {
+    for (const [nombreGrupo, clavesHojas] of hojasPorGrupo) {
         const ingredientes = [];
 
-        rutas.forEach(ruta => {
-            const datos = datosPorRuta.get(ruta);
+        clavesHojas.forEach(clave => {
+            const datos = datosPorClaveHoja.get(clave);
             if (datos && datos.length > 0) {
                 ingredientes.push(...datos);
-                archivosUsados++;
+                hojasUsadas.add(clave);
             }
         });
 
@@ -4228,16 +5464,21 @@ async function calcularVinculados() {
     }
 
     if (gruposCalculados === 0) {
-        alert(archivosUsados === 0
-            ? 'Los archivos vinculados no forman parte de la tabla actual. Procesa sus hojas primero.'
+        alert(hojasUsadas.size === 0
+            ? 'Las hojas vinculadas no forman parte de la tabla actual. Procesa sus hojas primero.'
             : 'No se pudo calcular ningún grupo vinculado. Revisa que tengan alumnos o proporciones.');
         return;
     }
 
-    // Aportes de archivos sin grupo: se mantienen intactos (factor 1) para no
-    // perder datos en filas compartidas por archivos vinculados y no vinculados.
-    ingredientesPorArchivo.forEach(({ ruta, datos }) => {
-        if ((gruposPorArchivo.get(ruta) || []).length > 0) return;
+    // Hojas sin grupo válido (no vinculadas o vinculadas a grupos sin factor):
+    // se mantienen intactas (factor 1) para no perder datos en filas
+    // compartidas por hojas vinculadas y no vinculadas.
+    ingredientesPorHoja.forEach(({ ruta, hoja, datos }) => {
+        if (!ruta || !hoja) return;
+
+        const claveHoja = claveHojaVinculacion(ruta, hoja);
+        const gruposValidos = hojasPorClave.get(claveHoja)?.grupos || [];
+        if (gruposValidos.length > 0) return;
 
         (datos || []).forEach(ing => {
             const clave = claveConsolidada(ing);
@@ -4255,6 +5496,7 @@ async function calcularVinculados() {
 
     console.log(
         `[cálculo] Vinculados: ${gruposCalculados} grupo(s), ` +
+        `${hojasUsadas.size} hoja(s), ` +
         `${clavesCalculadas.size} fila(s) recalculadas.`
     );
 }
@@ -4303,10 +5545,118 @@ function aplicarTotalesVinculados(totalesPorClave, clavesCalculadas) {
     console.log(`[cálculo] Totales actualizados en ${actualizadas} fila(s).`);
 }
 
-// Panel de 2 columnas: archivos cargados a la izquierda, grupos a la derecha.
-// El guardado es automático al marcar/desmarcar un grupo (igual que los
-// colores): no hay trabajo pendiente si se cierra con X, Escape o clic fuera.
-async function abrirModalVincular() {
+// Panel de 2 columnas: hojas vinculables a la izquierda, grupos a la
+// derecha. El guardado es automático al marcar/desmarcar un grupo (igual que
+// los colores): no hay trabajo pendiente si se cierra con X, Escape o clic
+// fuera.
+// Normaliza nombres para compararlos sin tildes, mayúsculas ni puntuación.
+function normalizarTextoSimilitud(texto) {
+    return String(texto ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// Similitud entre dos textos (0-100) usando la distancia de Levenshtein.
+function calcularSimilitud(str1, str2) {
+    const a = normalizarTextoSimilitud(str1);
+    const b = normalizarTextoSimilitud(str2);
+
+    if (!a || !b) return 0;
+    if (a === b) return 100;
+
+    const largoA = a.length;
+    const largoB = b.length;
+
+    // Distancia de Levenshtein con dos filas para no reservar una matriz completa.
+    let anterior = Array.from({ length: largoB + 1 }, (_, indice) => indice);
+    let actual = new Array(largoB + 1);
+
+    for (let i = 1; i <= largoA; i++) {
+        actual[0] = i;
+        const codigoA = a.charCodeAt(i - 1);
+
+        for (let j = 1; j <= largoB; j++) {
+            const costo = codigoA === b.charCodeAt(j - 1) ? 0 : 1;
+
+            actual[j] = Math.min(
+                actual[j - 1] + 1,
+                anterior[j] + 1,
+                anterior[j - 1] + costo
+            );
+        }
+
+        [anterior, actual] = [actual, anterior];
+    }
+
+    const distancia = anterior[largoB];
+    const maximo = Math.max(largoA, largoB);
+
+    return Math.round((1 - distancia / maximo) * 100);
+}
+
+// --- HOJAS VINCULABLES (fuente de datos del modal) ---
+// Un ítem por hoja: { id, archivoId, hojaId, label, type, parentLabel }.
+//  * id: clave interna única (archivo + hoja) para el DOM del modal.
+//  * archivoId: ruta del Excel.
+//  * hojaId: nombre de la hoja; es el identificador que se vincula.
+//  * label: nombre de la hoja; es lo que compara la auto-vinculación.
+//  * parentLabel: nombre del archivo padre, solo para mostrar jerarquía.
+async function obtenerItemsVinculables({ soloRuta = '' } = {}) {
+    const detalles = Array.from(document.querySelectorAll('#fileList .excel-file-details'))
+        .filter(detalle => detalle.dataset.ruta)
+        .filter(detalle => !soloRuta || detalle.dataset.ruta === soloRuta);
+
+    const items = [];
+
+    await Promise.all(detalles.map(async detalle => {
+        const ruta = detalle.dataset.ruta;
+        const nombreArchivo = ruta.split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+
+        let hojas = [];
+        try {
+            hojas = await obtenerHojasDeArchivo(ruta);
+        } catch (error) {
+            console.warn(`[vinculaciones] No se pudieron leer las hojas de ${ruta}:`, error);
+            return;
+        }
+
+        hojas.forEach(nombreHoja => {
+            items.push({
+                id: claveHojaVinculacion(ruta, nombreHoja),
+                archivoId: ruta,
+                hojaId: nombreHoja,
+                label: nombreHoja,
+                type: 'hoja',
+                parentLabel: nombreArchivo
+            });
+        });
+    }));
+
+    // Orden estable por archivo y hoja, sin depender del orden de lectura.
+    items.sort((a, b) => {
+        const porArchivo = a.parentLabel.localeCompare(b.parentLabel, 'es');
+        return porArchivo !== 0 ? porArchivo : a.label.localeCompare(b.label, 'es');
+    });
+
+    return items;
+}
+
+async function abrirModalVincular(opciones = {}) {
+    // El botón global puede pasar el evento de clic: se ignora.
+    if (opciones instanceof Event) opciones = {};
+
+    const {
+        ruta: rutaFoco = '',
+        hoja: hojaFoco = '',
+        // El menú del archivo limita la lista a sus hojas; el botón global
+        // muestra todas las hojas de todos los archivos.
+        soloRuta = false
+    } = opciones || {};
+
     if (document.getElementById('modalVincularArchivos')) return;
 
     cerrarMenuContextual();
@@ -4333,13 +5683,13 @@ async function abrirModalVincular() {
     // Si se abrió dos veces mientras esperábamos, no duplicamos el modal
     if (document.getElementById('modalVincularArchivos')) return;
 
-    const archivos = Array.from(document.querySelectorAll('#fileList .excel-file-details'))
-        .map(detalles => {
-            const ruta = detalles.dataset.ruta || '';
-            const nombre = ruta.split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
-            return { ruta, nombre };
-        })
-        .filter(archivo => archivo.ruta);
+    const itemsVinculables = await obtenerItemsVinculables({
+        soloRuta: soloRuta && rutaFoco ? rutaFoco : ''
+    });
+
+    // La lectura de hojas puede tardar: si mientras tanto se abrió el modal,
+    // no se duplica.
+    if (document.getElementById('modalVincularArchivos')) return;
 
     const overlay = document.createElement('div');
     overlay.className = 'colors-modal-overlay';
@@ -4361,22 +5711,123 @@ async function abrirModalVincular() {
     const titulo = document.createElement('div');
     titulo.className = 'colors-modal-title';
     titulo.id = 'vincularTitulo';
-    titulo.textContent = 'Vincular Archivos a Grupos';
+    titulo.textContent = 'Vincular Hojas a Grupos';
 
     const subtitulo = document.createElement('span');
     subtitulo.className = 'colors-modal-subtitle';
-    subtitulo.textContent = 'Un archivo puede pertenecer a varios grupos';
+    subtitulo.textContent = 'Cada hoja puede pertenecer a varios grupos';
     titulo.appendChild(subtitulo);
 
     const cerrarBtn = document.createElement('button');
     cerrarBtn.type = 'button';
     cerrarBtn.className = 'colors-modal-close';
     cerrarBtn.title = 'Cerrar';
-    cerrarBtn.setAttribute('aria-label', 'Cerrar vinculación de archivos');
+    cerrarBtn.setAttribute('aria-label', 'Cerrar vinculación');
     cerrarBtn.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
     cerrarBtn.addEventListener('click', cerrarModalVincular);
 
     header.append(titulo, cerrarBtn);
+
+    // Barra de auto-vinculación por similitud de nombres.
+    const barraAuto = document.createElement('div');
+    barraAuto.className = 'link-autolink';
+
+    const labelUmbral = document.createElement('label');
+    labelUmbral.className = 'link-autolink-label';
+    labelUmbral.htmlFor = 'vincularUmbralSimilitud';
+    labelUmbral.textContent = 'Umbral de similitud (%)';
+
+    const inputUmbral = document.createElement('input');
+    inputUmbral.type = 'number';
+    inputUmbral.id = 'vincularUmbralSimilitud';
+    inputUmbral.className = 'link-autolink-input';
+    inputUmbral.min = '50';
+    inputUmbral.max = '100';
+    inputUmbral.step = '1';
+    inputUmbral.value = '80';
+
+    const btnAutoVincular = document.createElement('button');
+    btnAutoVincular.type = 'button';
+    btnAutoVincular.className = 'btn-auto-vincular';
+    btnAutoVincular.textContent = 'Auto-vincular';
+    btnAutoVincular.title = 'Vincula los grupos cuyo nombre se parezca al de la hoja';
+
+    const estadoAuto = document.createElement('span');
+    estadoAuto.className = 'link-autolink-status';
+    estadoAuto.setAttribute('role', 'status');
+    estadoAuto.setAttribute('aria-live', 'polite');
+
+    btnAutoVincular.addEventListener('click', () => {
+        const umbral = Math.min(
+            100,
+            Math.max(50, Math.round(Number(inputUmbral.value) || 80))
+        );
+        inputUmbral.value = String(umbral);
+
+        btnAutoVincular.disabled = true;
+        btnAutoVincular.textContent = 'Auto-vinculando…';
+        estadoAuto.textContent = '';
+        estadoLimpieza.textContent = '';
+
+        // Deja que el navegador pinte el estado de "trabajando" antes del barrido.
+        setTimeout(() => {
+            let paresNuevos = 0;
+            let coincidencias = 0;
+            let itemsConCoincidencia = 0;
+            const archivosConCambios = new Set();
+
+            itemsVinculables.forEach(item => {
+                let coincidenciasItem = 0;
+
+                grupos.forEach(nombreGrupo => {
+                    if (calcularSimilitud(item.label, nombreGrupo) < umbral) {
+                        return;
+                    }
+
+                    coincidenciasItem++;
+                    coincidencias++;
+
+                    const vinculados = asegurarGruposHoja(item.archivoId, item.hojaId);
+
+                    if (!vinculados.has(nombreGrupo)) {
+                        vinculados.add(nombreGrupo);
+                        paresNuevos++;
+                        archivosConCambios.add(item.archivoId);
+                    }
+                });
+
+                if (coincidenciasItem > 0) itemsConCoincidencia++;
+            });
+
+            if (paresNuevos > 0) {
+                // El resultado queda visible: se despliegan los archivos que
+                // recibieron vínculos nuevos dentro del acordeón.
+                archivosConCambios.forEach(ruta =>
+                    aplicarExpansionArchivo(ruta, true)
+                );
+
+                persistirVinculaciones();
+                actualizarPanelVinculaciones();
+            }
+
+            refrescarSeleccionItem();
+            renderizarGrupos();
+
+            btnAutoVincular.disabled = false;
+            btnAutoVincular.textContent = 'Auto-vincular';
+
+            if (coincidencias === 0) {
+                estadoAuto.textContent = 'Ningún nombre de hoja superó el umbral.';
+            } else if (paresNuevos === 0) {
+                estadoAuto.textContent = 'Las coincidencias ya estaban vinculadas.';
+            } else {
+                estadoAuto.textContent =
+                    `${paresNuevos} vinculación(es) en ${itemsConCoincidencia} hoja(s).`;
+            }
+        }, 0);
+    });
+
+    barraAuto.append(labelUmbral, inputUmbral, btnAutoVincular, estadoAuto);
 
     // Cuerpo en dos columnas (reutiliza las clases del panel de colores)
     const body = document.createElement('div');
@@ -4387,11 +5838,11 @@ async function abrirModalVincular() {
 
     const tituloIzquierda = document.createElement('div');
     tituloIzquierda.className = 'colors-picker-heading';
-    tituloIzquierda.textContent = 'Archivos cargados';
+    tituloIzquierda.textContent = 'Archivos Excel';
 
-    const listaArchivos = document.createElement('ul');
-    listaArchivos.className = 'colors-picker-list';
-    listaArchivos.id = 'vincularListaArchivos';
+    const listaElementos = document.createElement('ul');
+    listaElementos.className = 'colors-picker-list';
+    listaElementos.id = 'vincularListaHojas';
 
     const colDerecha = document.createElement('div');
     colDerecha.className = 'colors-picker-column';
@@ -4405,37 +5856,236 @@ async function abrirModalVincular() {
     listaGrupos.className = 'colors-picker-rows';
     listaGrupos.id = 'vincularListaGrupos';
 
-    let archivoSeleccionado = null;
-    const botonesArchivo = new Map();
+    // Items seleccionados: la tarjeta central muestra la hoja en foco.
+    const itemsActuales = document.createElement('div');
+    itemsActuales.className = 'link-current-items';
+    itemsActuales.id = 'vincularItemActual';
 
-    function refrescarSeleccionArchivo() {
-        botonesArchivo.forEach((boton, ruta) => {
-            const activo = ruta === archivoSeleccionado;
+    let itemSeleccionadoId = null;
+    const botonesItem = new Map();
+    const itemsPorId = new Map(itemsVinculables.map(item => [item.id, item]));
+
+    // Agrupación para el acordeón: archivo padre → hojas hijas. Se conserva el
+    // orden alfabético que ya trae `itemsVinculables`.
+    const archivosVinculables = [];
+    const archivoPorRuta = new Map();
+
+    itemsVinculables.forEach(item => {
+        let archivo = archivoPorRuta.get(item.archivoId);
+
+        if (!archivo) {
+            archivo = {
+                ruta: item.archivoId,
+                label: item.parentLabel || item.archivoId,
+                hojas: []
+            };
+            archivoPorRuta.set(item.archivoId, archivo);
+            archivosVinculables.push(archivo);
+        }
+
+        archivo.hojas.push(item);
+    });
+
+    // Estado de expansión del acordeón. Los nodos se guardan en mapas para
+    // alternar `hidden`/clases sin volver a construir la lista.
+    const archivosExpandidos = new Set();
+    const filasArchivo = new Map();
+    const filasHoja = new Map();
+
+    // Estado de la acción destructiva "Desvincular todos".
+    let limpiezaEnCurso = false;
+
+    function actualizarResumenArchivo(ruta) {
+        const fila = filasArchivo.get(ruta);
+        if (!fila) return;
+
+        const total = fila.hojas.length;
+        const vinculadas = fila.hojas.filter(item =>
+            gruposDeHoja(item.archivoId, item.hojaId).size > 0
+        ).length;
+
+        fila.resumen.textContent = `${vinculadas}/${total}`;
+        fila.resumen.classList.toggle('has-links', vinculadas > 0);
+        fila.resumen.title = `${vinculadas} de ${total} hojas vinculadas`;
+        fila.resumen.setAttribute('aria-label', fila.resumen.title);
+    }
+
+    function refrescarResumenesArchivo() {
+        filasArchivo.forEach((_, ruta) => actualizarResumenArchivo(ruta));
+    }
+
+    function aplicarExpansionArchivo(ruta, expandido, { recordar = true } = {}) {
+        const fila = filasArchivo.get(ruta);
+        if (!fila) return;
+
+        if (recordar) {
+            if (expandido) archivosExpandidos.add(ruta);
+            else archivosExpandidos.delete(ruta);
+        }
+
+        fila.lista.hidden = !expandido;
+        fila.boton.classList.toggle('expanded', expandido);
+        fila.boton.setAttribute('aria-expanded', String(expandido));
+        fila.boton.title = expandido
+            ? `Ocultar hojas de ${fila.label}`
+            : `Mostrar hojas de ${fila.label}`;
+    }
+
+    function alternarExpansionArchivo(ruta) {
+        aplicarExpansionArchivo(ruta, !archivosExpandidos.has(ruta));
+    }
+
+    // Filtro de hojas: oculta las que no coinciden y muestra/expande solo los
+    // archivos con resultados. No altera el estado manual del acordeón.
+    function aplicarFiltroHojas(texto, estadoBusqueda) {
+        const consulta = normalizarTextoSimilitud(texto);
+        let visibles = 0;
+
+        archivosVinculables.forEach(archivo => {
+            const fila = filasArchivo.get(archivo.ruta);
+            if (!fila) return;
+
+            const coincideArchivo = consulta === ''
+                || normalizarTextoSimilitud(archivo.label).includes(consulta);
+
+            let coincidencias = 0;
+
+            archivo.hojas.forEach(item => {
+                const filaHoja = filasHoja.get(item.id);
+                const coincide = consulta === ''
+                    || coincideArchivo
+                    || normalizarTextoSimilitud(item.label).includes(consulta);
+
+                if (filaHoja) filaHoja.hidden = !coincide;
+                if (coincide) coincidencias++;
+            });
+
+            fila.li.hidden = coincidencias === 0;
+            if (coincidencias > 0) visibles++;
+
+            if (consulta) {
+                aplicarExpansionArchivo(
+                    archivo.ruta,
+                    coincidencias > 0,
+                    { recordar: false }
+                );
+            } else {
+                aplicarExpansionArchivo(
+                    archivo.ruta,
+                    archivosExpandidos.has(archivo.ruta),
+                    { recordar: false }
+                );
+            }
+        });
+
+        estadoBusqueda.textContent = consulta && visibles === 0
+            ? 'Ninguna hoja coincide con la búsqueda.'
+            : '';
+    }
+
+    function refrescarSeleccionItem() {
+        botonesItem.forEach((boton, id) => {
+            const activo = id === itemSeleccionadoId;
             boton.classList.toggle('active', activo);
             boton.setAttribute('aria-pressed', String(activo));
 
             const contador = boton.querySelector('.colors-picker-count');
-            if (contador) contador.textContent = String(gruposDeArchivo(ruta).size);
+            const item = itemsPorId.get(id);
+            if (contador && item) {
+                contador.textContent = String(gruposDeHoja(item.archivoId, item.hojaId).size);
+            }
+        });
+
+        refrescarResumenesArchivo();
+        actualizarBotonDesvincularTodo();
+    }
+
+    // Refleja si hay algo que borrar: sin vínculos el botón queda deshabilitado
+    // y explica por qué en el tooltip.
+    function actualizarBotonDesvincularTodo() {
+        if (!btnDesvincularTodo || limpiezaEnCurso) return;
+
+        const hay = hayVinculacionesHojas();
+        btnDesvincularTodo.disabled = !hay;
+        btnDesvincularTodo.setAttribute('aria-disabled', String(!hay));
+        btnDesvincularTodo.title = hay
+            ? 'Elimina todas las vinculaciones entre hojas y grupos'
+            : 'No hay vinculaciones para eliminar';
+    }
+
+    // Icono de hoja (distinto del archivo Excel) para la lista y la tarjeta.
+    function crearIconoHoja() {
+        const icono = document.createElement('span');
+        icono.className = 'link-file-icon';
+        icono.innerHTML = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="1.5"/><path d="M3 9h18M9 3v18"/></svg>';
+        return icono;
+    }
+
+    // Icono del archivo padre en el acordeón.
+    function crearIconoArchivo() {
+        const icono = document.createElement('span');
+        icono.className = 'link-file-icon';
+        icono.innerHTML = '<svg class="icon icon-sm xlsx" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+        return icono;
+    }
+
+    // Tarjeta de contexto del ítem: nombre con jerarquía alta y subtexto
+    // opcional con el padre. No es un botón ni usa relleno de acento para no
+    // competir con las acciones principales del modal.
+    function crearTarjetaItem(item) {
+        const tarjeta = document.createElement('div');
+        tarjeta.className = 'link-current-item';
+
+        const icono = crearIconoHoja();
+
+        const texto = document.createElement('span');
+        texto.className = 'link-current-item-text';
+
+        const etiqueta = document.createElement('span');
+        etiqueta.className = 'link-current-item-label';
+        etiqueta.textContent = item.label || item.id;
+        etiqueta.title = item.label || item.id;
+
+        texto.appendChild(etiqueta);
+
+        // Sin parentLabel no se crea el nodo: no queda espacio vacío hoy.
+        if (item.parentLabel) {
+            const padre = document.createElement('span');
+            padre.className = 'link-current-item-parent';
+            padre.textContent = `Archivo: ${item.parentLabel}`;
+            padre.title = item.parentLabel;
+            texto.appendChild(padre);
+        }
+
+        tarjeta.append(icono, texto);
+        return tarjeta;
+    }
+
+    function renderizarItemsActuales(items) {
+        itemsActuales.innerHTML = '';
+        itemsActuales.hidden = !items || items.length === 0;
+
+        (items || []).forEach(item => {
+            itemsActuales.appendChild(crearTarjetaItem(item));
         });
     }
 
     function renderizarGrupos() {
         listaGrupos.innerHTML = '';
 
-        const archivo = archivos.find(a => a.ruta === archivoSeleccionado);
+        const item = itemsPorId.get(itemSeleccionadoId);
 
-        if (!archivo) {
-            tituloDerecha.textContent = 'Grupos';
+        renderizarItemsActuales(item ? [item] : []);
+
+        if (!item) {
             const vacio = document.createElement('li');
             vacio.className = 'colors-picker-empty';
-            vacio.textContent = archivos.length === 0
-                ? 'Agrega archivos Excel para poder vincularlos.'
-                : 'Selecciona un archivo de la izquierda.';
+            vacio.textContent = itemsVinculables.length === 0
+                ? 'Agrega archivos con hojas para poder vincularlas.'
+                : 'Selecciona una hoja de la izquierda.';
             listaGrupos.appendChild(vacio);
             return;
         }
-
-        tituloDerecha.textContent = `Grupos de «${archivo.nombre}»`;
 
         if (grupos.length === 0) {
             const vacio = document.createElement('li');
@@ -4445,7 +6095,7 @@ async function abrirModalVincular() {
             return;
         }
 
-        const vinculados = gruposDeArchivo(archivo.ruta);
+        const vinculados = gruposDeHoja(item.archivoId, item.hojaId);
 
         grupos.forEach(nombreGrupo => {
             const li = document.createElement('li');
@@ -4471,14 +6121,18 @@ async function abrirModalVincular() {
             boton.append(check, etiqueta);
 
             boton.addEventListener('click', () => {
-                alternarVinculacion(archivo.ruta, nombreGrupo);
+                estadoLimpieza.textContent = '';
+
+                // Se vincula la hoja concreta: archivo + hoja + grupo.
+                alternarVinculacionHoja(item.archivoId, item.hojaId, nombreGrupo);
 
                 // Actualización en sitio: conserva el foco del teclado
-                const ahoraActivo = gruposDeArchivo(archivo.ruta).has(nombreGrupo);
+                const ahoraActivo = gruposDeHoja(item.archivoId, item.hojaId)
+                    .has(nombreGrupo);
                 boton.classList.toggle('active', ahoraActivo);
                 boton.setAttribute('aria-checked', String(ahoraActivo));
 
-                refrescarSeleccionArchivo();
+                refrescarSeleccionItem();
             });
 
             li.appendChild(boton);
@@ -4486,63 +6140,216 @@ async function abrirModalVincular() {
         });
     }
 
-    // Columna izquierda: archivos
-    if (archivos.length === 0) {
+    // Buscador de hojas/archivos del acordeón.
+    const buscador = document.createElement('input');
+    buscador.type = 'search';
+    buscador.className = 'link-search-input';
+    buscador.id = 'vincularBuscarHojas';
+    buscador.placeholder = 'Buscar archivo u hoja…';
+    buscador.autocomplete = 'off';
+    buscador.setAttribute('aria-label', 'Buscar archivo u hoja');
+
+    const estadoBusqueda = document.createElement('span');
+    estadoBusqueda.className = 'link-search-status';
+    estadoBusqueda.setAttribute('role', 'status');
+    estadoBusqueda.setAttribute('aria-live', 'polite');
+
+    buscador.addEventListener('input', () => {
+        aplicarFiltroHojas(buscador.value, estadoBusqueda);
+    });
+
+    // Columna izquierda: acordeón de archivos Excel → hojas.
+    if (itemsVinculables.length === 0) {
         const vacio = document.createElement('li');
         vacio.className = 'colors-picker-empty';
-        vacio.textContent = 'No hay archivos Excel cargados.';
-        listaArchivos.appendChild(vacio);
+        vacio.textContent = 'No hay hojas cargadas.';
+        listaElementos.appendChild(vacio);
     } else {
-        archivos.forEach(archivo => {
+        archivosVinculables.forEach((archivo, indiceArchivo) => {
             const li = document.createElement('li');
+            li.className = 'link-file-group';
 
             const boton = document.createElement('button');
             boton.type = 'button';
-            boton.className = 'colors-picker-color';
+            boton.className = 'link-file-toggle';
+            boton.setAttribute('aria-expanded', 'false');
 
-            const icono = document.createElement('span');
-            icono.className = 'link-file-icon';
-            icono.innerHTML = '<svg class="icon icon-sm xlsx" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+            const chevron = document.createElement('span');
+            chevron.className = 'link-file-chevron';
+            chevron.setAttribute('aria-hidden', 'true');
+            chevron.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>';
 
-            const etiqueta = document.createElement('span');
-            etiqueta.className = 'colors-picker-name link-file-name';
-            etiqueta.textContent = archivo.nombre || archivo.ruta;
-            etiqueta.title = archivo.ruta;
+            const nombre = document.createElement('span');
+            nombre.className = 'link-file-name';
+            nombre.textContent = archivo.label;
+            nombre.title = archivo.label;
 
-            const contador = document.createElement('span');
-            contador.className = 'colors-picker-count';
-            contador.textContent = String(gruposDeArchivo(archivo.ruta).size);
-            contador.title = 'Grupos vinculados';
+            const resumen = document.createElement('span');
+            resumen.className = 'link-file-linked';
 
-            boton.append(icono, etiqueta, contador);
+            boton.append(chevron, crearIconoArchivo(), nombre, resumen);
 
-            boton.addEventListener('click', () => {
-                archivoSeleccionado = archivo.ruta;
-                refrescarSeleccionArchivo();
-                renderizarGrupos();
+            const listaHojasArchivo = document.createElement('ul');
+            listaHojasArchivo.className = 'sheets-list link-file-sheets';
+            listaHojasArchivo.id = `vincularHojasArchivo${indiceArchivo}`;
+            listaHojasArchivo.hidden = true;
+            boton.setAttribute('aria-controls', listaHojasArchivo.id);
+
+            archivo.hojas.forEach(item => {
+                const liHoja = document.createElement('li');
+                liHoja.className = 'sheet-item link-sheet-item';
+
+                const botonHoja = document.createElement('button');
+                botonHoja.type = 'button';
+                botonHoja.className = 'colors-picker-color link-sheet-row';
+                botonHoja.title = `${item.label || item.hojaId} — ${archivo.label}`;
+
+                const etiqueta = document.createElement('span');
+                etiqueta.className = 'sheet-name';
+                etiqueta.textContent = item.label || item.hojaId;
+
+                const contador = document.createElement('span');
+                contador.className = 'colors-picker-count';
+                contador.textContent = String(
+                    gruposDeHoja(item.archivoId, item.hojaId).size
+                );
+                contador.title = 'Grupos vinculados';
+
+                botonHoja.append(etiqueta, contador);
+
+                botonHoja.addEventListener('click', () => {
+                    itemSeleccionadoId = item.id;
+                    refrescarSeleccionItem();
+                    renderizarGrupos();
+                });
+
+                liHoja.appendChild(botonHoja);
+                listaHojasArchivo.appendChild(liHoja);
+                filasHoja.set(item.id, liHoja);
+                botonesItem.set(item.id, botonHoja);
             });
 
-            li.appendChild(boton);
-            listaArchivos.appendChild(li);
-            botonesArchivo.set(archivo.ruta, boton);
+            boton.addEventListener('click', () => {
+                alternarExpansionArchivo(archivo.ruta);
+            });
+
+            filasArchivo.set(archivo.ruta, {
+                li,
+                boton,
+                lista: listaHojasArchivo,
+                resumen,
+                label: archivo.label,
+                hojas: archivo.hojas
+            });
+
+            li.append(boton, listaHojasArchivo);
+            listaElementos.appendChild(li);
+            actualizarResumenArchivo(archivo.ruta);
         });
     }
 
-    // Preselección: primer archivo con vinculaciones o el primero de la lista
-    const archivoConGrupos = archivos.find(archivo => gruposDeArchivo(archivo.ruta).size > 0);
-    archivoSeleccionado = (archivoConGrupos || archivos[0])?.ruta || null;
+    // Preselección: la hoja desde la que se abrió el modal, si existe; si no,
+    // la primera que ya tenga grupos o la primera de la lista.
+    const itemFoco = rutaFoco
+        ? itemsVinculables.find(item =>
+            item.archivoId === rutaFoco
+            && (!hojaFoco || item.hojaId === hojaFoco)
+        )
+        : null;
 
-    colIzquierda.append(tituloIzquierda, listaArchivos);
-    colDerecha.append(tituloDerecha, listaGrupos);
+    const itemConGrupos = itemsVinculables.find(item =>
+        gruposDeHoja(item.archivoId, item.hojaId).size > 0
+    );
+
+    itemSeleccionadoId = (itemFoco || itemConGrupos || itemsVinculables[0])?.id || null;
+
+    // Abre el archivo de la hoja preseleccionada (o el único archivo si solo
+    // hay uno) para que la selección no quede escondida dentro del acordeón.
+    const itemInicial = itemsPorId.get(itemSeleccionadoId);
+    if (itemInicial) {
+        aplicarExpansionArchivo(itemInicial.archivoId, true);
+    } else if (archivosVinculables.length === 1) {
+        aplicarExpansionArchivo(archivosVinculables[0].ruta, true);
+    }
+
+    colIzquierda.append(tituloIzquierda, buscador, estadoBusqueda, listaElementos);
+    colDerecha.append(itemsActuales, tituloDerecha, listaGrupos);
     body.append(colIzquierda, colDerecha);
 
     // Pie: guardado automático, sin botón "Guardar" que pueda quedar sin pulsar
     const footer = document.createElement('div');
     footer.className = 'link-modal-footer';
 
+    const infoFooter = document.createElement('div');
+    infoFooter.className = 'link-modal-footer-info';
+
     const pista = document.createElement('span');
     pista.className = 'link-modal-hint';
     pista.textContent = 'Los cambios se guardan automáticamente.';
+
+    const estadoLimpieza = document.createElement('span');
+    estadoLimpieza.className = 'link-modal-status';
+    estadoLimpieza.id = 'vincularEstadoLimpieza';
+    estadoLimpieza.setAttribute('role', 'status');
+    estadoLimpieza.setAttribute('aria-live', 'polite');
+
+    infoFooter.append(pista, estadoLimpieza);
+
+    const accionesFooter = document.createElement('div');
+    accionesFooter.className = 'link-modal-footer-actions';
+
+    // Acción destructiva: elimina todos los pares hoja → grupo.
+    const btnDesvincularTodo = document.createElement('button');
+    btnDesvincularTodo.type = 'button';
+    btnDesvincularTodo.id = 'btnDesvincularTodo';
+    btnDesvincularTodo.className = 'link-danger-btn';
+    btnDesvincularTodo.textContent = 'Desvincular todos';
+
+    btnDesvincularTodo.addEventListener('click', async () => {
+        if (limpiezaEnCurso || !hayVinculacionesHojas()) return;
+
+        const confirmado = await window.__TAURI__.dialog.ask(
+            '¿Estás seguro de que deseas desvincular todas las hojas? '
+                + 'Esta acción no se puede deshacer.',
+            {
+                title: 'Desvincular todas las hojas',
+                kind: 'warning',
+                okLabel: 'Desvincular',
+                cancelLabel: 'Cancelar'
+            }
+        );
+
+        if (!confirmado) return;
+
+        limpiezaEnCurso = true;
+        estadoLimpieza.textContent = '';
+        btnDesvincularTodo.disabled = true;
+        btnDesvincularTodo.textContent = 'Desvinculando…';
+
+        try {
+            // Estado en memoria: un solo mapa ruta → hoja → grupos.
+            vinculacionesHojasGrupos.clear();
+
+            // Se espera la cola para avisar solo cuando el store ya está vacío.
+            await persistirVinculaciones();
+
+            // No queda ninguna hoja en edición: el modal vuelve a su estado
+            // vacío y el usuario elige una hoja si quiere volver a vincular.
+            itemSeleccionadoId = null;
+            actualizarPanelVinculaciones();
+            refrescarSeleccionItem();
+            renderizarGrupos();
+
+            estadoLimpieza.textContent = 'Todas las vinculaciones han sido eliminadas.';
+        } catch (error) {
+            console.error('No se pudieron desvincular todas las hojas:', error);
+            estadoLimpieza.textContent = 'No se pudieron eliminar todas las vinculaciones.';
+        } finally {
+            limpiezaEnCurso = false;
+            btnDesvincularTodo.textContent = 'Desvincular todos';
+            actualizarBotonDesvincularTodo();
+        }
+    });
 
     const cerrarFooter = document.createElement('button');
     cerrarFooter.type = 'button';
@@ -4550,14 +6357,21 @@ async function abrirModalVincular() {
     cerrarFooter.textContent = 'Cerrar';
     cerrarFooter.addEventListener('click', cerrarModalVincular);
 
-    footer.append(pista, cerrarFooter);
+    accionesFooter.append(btnDesvincularTodo, cerrarFooter);
+    footer.append(infoFooter, accionesFooter);
 
-    modal.append(header, body, footer);
+    modal.append(header, barraAuto, body, footer);
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
-    refrescarSeleccionArchivo();
+    refrescarSeleccionItem();
     renderizarGrupos();
+    actualizarBotonDesvincularTodo();
+
+    // Al abrir desde una hoja concreta, su fila queda visible en la lista.
+    if (itemFoco) {
+        botonesItem.get(itemSeleccionadoId)?.scrollIntoView({ block: 'nearest' });
+    }
 
     document.addEventListener('keydown', cerrarVinculacionPorEscape);
     cerrarBtn.focus();
@@ -4787,8 +6601,10 @@ function abrirMenuContextual(x, y, opciones, targetElement = null) {
     mostrarMenuContextual(menu, x, y, targetElement);
 }
 
-// Menú de colores de una fila de ingrediente: grid de 8 swatches + "Quitar color"
-function abrirMenuColores(x, y, idFila, filaOrigen = null) {
+// Menú de colores de una fila de ingrediente: grid de 8 swatches + "Quitar
+// color". `idsColor` es el lote de filas al que se aplica el color (la
+// selección múltiple completa o solo la fila pulsada).
+function abrirMenuColores(x, y, idFila, filaOrigen = null, idsColor = [idFila]) {
     const menu = document.createElement('div');
     menu.id = 'menuColores';
     menu.classList.add('context-menu-colores');
@@ -4806,7 +6622,7 @@ function abrirMenuColores(x, y, idFila, filaOrigen = null) {
 
         swatch.addEventListener('click', () => {
             cerrarMenuContextual();
-            guardarColorFila(idFila, id);
+            guardarColorFilas(idsColor, id);
         });
 
         grid.appendChild(swatch);
@@ -4821,7 +6637,7 @@ function abrirMenuColores(x, y, idFila, filaOrigen = null) {
 
     quitar.addEventListener('click', () => {
         cerrarMenuContextual();
-        quitarColorFila(idFila);
+        quitarColorFilas(idsColor);
     });
 
     menu.appendChild(quitar);
@@ -4914,40 +6730,60 @@ function persistirVersionColores() {
         });
 }
 
-// Aplica el color a todas las filas con ese id (la tabla puede estar duplicada)
-function pintarFilaPorId(idFila, colorId) {
+// Pinta en el DOM todas las filas cuyos ids estén en el lote. Una sola pasada
+// por la tabla y un único recálculo del filtro, sin re-renderizar.
+function pintarFilasPorIds(idsFilas, colorId) {
+    const ids = new Set(idsFilas || []);
+    if (ids.size === 0) return;
+
     const color = colorId ? (COLORES_POR_ID.get(colorId) || '') : '';
 
-    document.querySelectorAll('#tablaConsolidadaBody tr').forEach(fila => {
-        if (fila.dataset.idFila === idFila) {
+    document.querySelectorAll('#tablaConsolidadaBody tr[data-id-fila]').forEach(fila => {
+        if (ids.has(fila.dataset.idFila)) {
             fila.style.backgroundColor = color;
         }
     });
 
     // Si hay un filtro activo, pintar o quitar color puede cambiar la
-    // visibilidad de esa fila: se recalcula sin repintar la tabla.
+    // visibilidad de esas filas: se recalcula sin repintar la tabla.
     reaplicarFiltroColor();
+}
+
+// Aplica el color a todas las filas con ese id (la tabla puede estar duplicada)
+function pintarFilaPorId(idFila, colorId) {
+    pintarFilasPorIds([idFila], colorId);
+}
+
+// Aplica un color a un lote de filas: estado en memoria + DOM + store.
+function guardarColorFilas(idsFilas, colorId) {
+    const ids = Array.from(idsFilas || []).filter(Boolean);
+    if (ids.length === 0 || !COLORES_POR_ID.has(colorId)) return;
+
+    console.log(`[colores] guardarColorFilas: ${ids.length} fila(s) -> ${colorId}`);
+
+    ids.forEach(id => coloresIngredientes.set(id, colorId));
+    pintarFilasPorIds(ids, colorId);
+    persistirColoresFilas();
 }
 
 // Actualiza estado en memoria + pinta de inmediato y persiste en background
 function guardarColorFila(idFila, colorId) {
-    if (!idFila || !COLORES_POR_ID.has(colorId)) return;
+    guardarColorFilas([idFila], colorId);
+}
 
-    console.log(`[colores] guardarColorFila: "${idFila}" -> ${colorId}`);
+function quitarColorFilas(idsFilas) {
+    const ids = Array.from(idsFilas || []).filter(Boolean);
+    if (ids.length === 0) return;
 
-    coloresIngredientes.set(idFila, colorId);
-    pintarFilaPorId(idFila, colorId);
+    console.log(`[colores] quitarColorFilas: ${ids.length} fila(s)`);
+
+    ids.forEach(id => coloresIngredientes.delete(id));
+    pintarFilasPorIds(ids, null);
     persistirColoresFilas();
 }
 
 function quitarColorFila(idFila) {
-    if (!idFila) return;
-
-    console.log(`[colores] quitarColorFila: "${idFila}"`);
-
-    coloresIngredientes.delete(idFila);
-    pintarFilaPorId(idFila, null);
-    persistirColoresFilas();
+    quitarColorFilas([idFila]);
 }
 
 // --- FILTRO POR COLOR DE LA TABLA PRINCIPAL (SELECCIÓN MÚLTIPLE) ---
@@ -6204,7 +8040,7 @@ function actualizarBotonEliminarSeleccionados() {
 }
 
 // Limpia del Store los datos que dependían de los archivos eliminados:
-//  - vinculaciones archivo → grupo (se borran las entradas de esas rutas),
+//  - vinculaciones hoja → grupo (se borran las entradas de esas rutas),
 //  - colores de ingredientes que solo aportaban esos archivos.
 function limpiarDatosDeArchivosEliminados(rutas) {
     const eliminadas = new Set(rutas);
@@ -6212,7 +8048,7 @@ function limpiarDatosDeArchivosEliminados(rutas) {
 
     let vinculacionesCambiadas = false;
     eliminadas.forEach(ruta => {
-        if (vinculacionesArchivosGrupos.delete(ruta)) vinculacionesCambiadas = true;
+        if (vinculacionesHojasGrupos.delete(ruta)) vinculacionesCambiadas = true;
     });
     if (vinculacionesCambiadas) persistirVinculaciones();
 
@@ -6304,6 +8140,7 @@ async function eliminarArchivosSeleccionados() {
         // Las hojas de los archivos borrados ya no existen en el DOM. Se
         // recalcula con la selección restante; si no queda ninguna hoja
         // marcada, la tabla y los totales se vacían.
+        actualizarIndicadorHojasSeleccionadas();
         procesarHojasDebounced.cancelar();
         desmarcarHojaDebounced.cancelar();
         ejecutarProcesamientoHojas(++idSeleccionHojas, { silencioso: true });
@@ -6339,6 +8176,7 @@ async function eliminarArchivoDeLista(detalles) {
     try {
         await invoke('eliminar_archivo_reciente', { ruta });
         detalles.remove();
+        actualizarIndicadorHojasSeleccionadas();
 
         // Un archivo eliminado no debe conservar vinculaciones ni colores que
         // solo dependían de él.
@@ -6933,6 +8771,7 @@ function restaurarCantidadOriginal(idFila) {
 function pintarTablaConsolidada(datos) {
     const tbody = document.getElementById('tablaConsolidadaBody');
     if (!tbody) return;
+    limpiarSeleccionFilas();
     tbody.innerHTML = '';
 
     datos.forEach(item => {
@@ -6965,6 +8804,7 @@ function pintarTablaConsolidada(datos) {
 function pintarTablaConsolidadaConTotal(datos) {
     const tbody = document.getElementById('tablaConsolidadaBody');
     if (!tbody) return;
+    limpiarSeleccionFilas();
     tbody.innerHTML = '';
 
     datos.forEach(item => {

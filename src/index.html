@@ -41,6 +41,10 @@
                 <summary class="files-summary">
                     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
                     Archivos
+                    <span class="hojas-procesando ocultar-en-impresion" id="hojasProcesando" role="status" aria-live="polite" title="Hojas seleccionadas para procesar" hidden>
+                        <span class="processing-spinner" id="hojasProcesandoSpinner" aria-hidden="true" hidden></span>
+                        <span id="hojasProcesandoTexto">0 hojas</span>
+                    </span>
                     <button class="btn-summary-action" type="button" id="btnLimpiarSeleccion" title="Limpiar la selección de archivos y hojas">
                         <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true">
                             <path d="M20 20H7L3 16C2.5 15.5 2.5 14.5 3 14L13 4C13.5 3.5 14.5 3.5 15 4L21 10C21.5 10.5 21.5 11.5 21 12L11 22"/>
@@ -80,7 +84,7 @@
                         <span class="auto-switch-text">Auto</span>
                     </label>
                 </div>
-                <button class="btn-secondary" type="button" id="btnVincular" title="Vincular archivos">
+                <button class="btn-secondary" type="button" id="btnVincular" title="Vincular hojas de Excel a grupos">
                     <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                     Vincular
                 </button>
@@ -113,6 +117,7 @@
                         <span class="processing-spinner" aria-hidden="true"></span>
                         <span class="processing-text">Procesando…</span>
                     </span>
+                    <span class="hojas-procesadas ocultar-en-impresion" id="hojasProcesadas" role="status" aria-live="polite">0 hojas procesadas</span>
                     <button class="btn-toolbar" type="button" id="btnFiltrarColor" title="Mostrar solo las filas de un color" aria-haspopup="menu" aria-expanded="false">
                         <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg>
                         <span id="filtrarColorLabel">Filtrar por color</span>
@@ -190,7 +195,7 @@
                         <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 6h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h.01M16 19h.01"/></svg>
                         Calcular
                     </button>
-                    <button class="btn-calc-total btn-calc-vinculados" type="button" id="btnCalcularVinculados" title="Calcular cada fila con el grupo vinculado a su archivo de origen">
+                    <button class="btn-calc-total btn-calc-vinculados" type="button" id="btnCalcularVinculados" title="Calcular cada fila con el grupo vinculado a su hoja de origen">
                         <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg>
                         Calcular vinculados
                     </button>
@@ -208,6 +213,14 @@
                             <path d="M12 15V3"/>
                         </svg>
                         Importar Grupos
+                    </button>
+                    <button class="btn-delete-all-groups" type="button" id="btnEliminarTodosGrupos" title="Eliminar todos los grupos guardados" aria-label="Eliminar todos los grupos guardados">
+                        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M3 6h18"/>
+                            <path d="M8 6V4h8v2"/>
+                            <path d="M19 6l-1 14H6L5 6"/>
+                            <path d="M10 11v6M14 11v6"/>
+                        </svg>
                     </button>
                 </div>
                 <ul class="saved-list" id="savedList">

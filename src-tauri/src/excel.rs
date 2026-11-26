@@ -2,6 +2,8 @@ use calamine::{open_workbook, Data, Reader, Xlsx};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tauri::Emitter;
 use tauri_plugin_store::StoreExt;
 use crate::ajustes::{MapeoInsumos, UnidadEquivalencia};
 use crate::secciones::Seccion; // Para el comando calcular_total
@@ -595,11 +597,83 @@ pub fn obtener_hojas_excel(ruta: String) -> Result<Vec<String>, String> {
 /// `advertencias` incluye las hojas que no se pudieron leer o cuya cabecera no
 /// se reconoció, para que la interfaz las muestre aunque el resto del archivo
 /// sí se haya procesado.
+/// Resultado aislado de una hoja. El frontend necesita este desglose para
+/// aplicar el grupo vinculado a cada hoja por separado; `ingredientes` del
+/// resultado general sigue siendo la consolidación de todo el archivo.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultadoHojaProcesada {
+    pub nombre: String,
+    pub ingredientes: Vec<IngredienteConsolidado>,
+    /// Filas de ingrediente válidas leídas de la hoja (antes de consolidar).
+    #[serde(default)]
+    pub filas_validas: usize,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultadoProcesamientoHojas {
     pub ingredientes: Vec<IngredienteConsolidado>,
     pub advertencias: Vec<String>,
+    /// Hojas que aportaron al menos una fila válida. El frontend las cuenta
+    /// para el indicador "X hojas procesadas" de la barra central: una hoja
+    /// ilegible, sin columnas válidas o sin datos no debe sumar.
+    #[serde(default)]
+    pub hojas_procesadas: usize,
+    /// Desglose por hoja (solo hojas con filas válidas). Mantiene el vínculo
+    /// hoja → grupo independiente del resto del archivo.
+    #[serde(default)]
+    pub detalle_hojas: Vec<ResultadoHojaProcesada>,
+}
+
+// --- PROGRESO DE HOJAS ---
+// El frontend escucha este evento para animar el spinner del panel izquierdo
+// mientras el backend sigue leyendo hojas. El número visible del badge, en
+// cambio, lo calcula el JS con la selección del usuario. Se emite desde este
+// módulo porque es el único que sabe cuándo empieza y termina cada hoja.
+const EVENTO_HOJAS_PROCESANDO: &str = "hojas-procesando";
+
+/// Hojas pendientes de todas las lecturas activas. Es global a propósito: el
+/// frontend puede lanzar un procesamiento nuevo antes de que termine el
+/// anterior (autoprocesado), y el indicador debe reflejar el trabajo real del
+/// backend, no una sola invocación.
+static HOJAS_EN_PROCESO: AtomicUsize = AtomicUsize::new(0);
+
+fn emitir_hojas_procesando(app: &tauri::AppHandle, cantidad: usize) {
+    let _ = app.emit(EVENTO_HOJAS_PROCESANDO, cantidad);
+}
+
+fn sumar_hojas(app: &tauri::AppHandle, cantidad: usize) {
+    if cantidad == 0 {
+        return;
+    }
+
+    let total = HOJAS_EN_PROCESO.fetch_add(cantidad, Ordering::SeqCst) + cantidad;
+    emitir_hojas_procesando(app, total);
+}
+
+fn restar_hoja(app: &tauri::AppHandle) {
+    // `fetch_update` con `saturating_sub` evita que un desbalance deje el
+    // contador en un valor imposible (nunca baja de 0).
+    let anterior = HOJAS_EN_PROCESO
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |valor| {
+            Some(valor.saturating_sub(1))
+        })
+        .unwrap_or_default();
+
+    emitir_hojas_procesando(app, anterior.saturating_sub(1));
+}
+
+/// Descuenta la hoja al salir de su iteración, también en los `continue` de
+/// error. Así cualquier salida nueva no puede olvidar actualizar el contador.
+struct FinDeHoja<'a> {
+    app: &'a tauri::AppHandle,
+}
+
+impl Drop for FinDeHoja<'_> {
+    fn drop(&mut self) {
+        restar_hoja(self.app);
+    }
 }
 
 /// Lee las hojas indicadas aplicando las reglas configuradas por el usuario.
@@ -616,19 +690,49 @@ pub fn procesar_hojas_excel(
 ) -> Result<ResultadoProcesamientoHojas, String> {
     let mapeo = match mapeo {
         Some(mapeo) => mapeo,
-        None => crate::ajustes::obtener_mapeo_insumos(app)?,
+        None => crate::ajustes::obtener_mapeo_insumos(app.clone())?,
     };
 
     // Validación temprana: si falta una regla esencial se devuelve un error
     // legible en vez de fallar hoja por hoja.
     let reglas = ReglasColumnas::desde_mapeo(&mapeo)?;
 
-    procesar_archivo_con_reglas(&ruta, nombres_hojas, &reglas)
+    procesar_archivo_con_reglas(&ruta, nombres_hojas, &reglas, Some(&app))
 }
 
 /// Unidad aplicada cuando la fila no indica una. Antes era configurable desde
 /// "Importación y Excel"; ahora es un valor fijo para no perder filas.
 const UNIDAD_POR_DEFECTO: &str = "UNIDAD";
+
+/// Suma una fila ya validada al mapa indicado, conservando la variante de
+/// nombre con mejor puntuación. Se usa tanto para el total del archivo como
+/// para el desglose por hoja.
+fn acumular_ingrediente(
+    mapa: &mut HashMap<String, IngredienteConsolidado>,
+    nombre: &str,
+    unidad: &str,
+    cantidad: f64,
+) {
+    let clave_nombre = clave_ingrediente(nombre);
+    let clave = format!("{}|{}", clave_nombre, unidad.to_lowercase());
+    let entry = mapa
+        .entry(clave.clone())
+        .or_insert_with(|| IngredienteConsolidado {
+            nombre: nombre_visible(nombre),
+            unidad: unidad.to_string(),
+            cantidad: 0.0,
+            clave,
+            clave_ingrediente: clave_nombre,
+            opciones_codigo: Vec::new(),
+            codigo_seleccionado: String::new(),
+        });
+
+    if puntuacion_nombre(nombre) > puntuacion_nombre(&entry.nombre) {
+        entry.nombre = nombre_visible(nombre);
+    }
+
+    entry.cantidad += cantidad;
+}
 
 /// Núcleo de lectura separado del comando: así se puede probar con un `.xlsx`
 /// real sin necesitar un `AppHandle` de Tauri.
@@ -636,6 +740,7 @@ fn procesar_archivo_con_reglas(
     ruta: &str,
     nombres_hojas: Vec<String>,
     reglas: &ReglasColumnas,
+    app: Option<&tauri::AppHandle>,
 ) -> Result<ResultadoProcesamientoHojas, String> {
     if nombres_hojas.is_empty() {
         return Err("No hay hojas seleccionadas para procesar.".to_string());
@@ -645,8 +750,20 @@ fn procesar_archivo_con_reglas(
         open_workbook(ruta).map_err(|e| format!("Error abriendo Excel: {}", e))?;
     let mut mapa: HashMap<String, IngredienteConsolidado> = HashMap::new();
     let mut advertencias: Vec<String> = Vec::new();
+    let mut hojas_procesadas: usize = 0;
+    let mut detalle_hojas: Vec<ResultadoHojaProcesada> = Vec::new();
+
+    // Se cuenta solo cuando el archivo se abrió bien: un error temprano no
+    // debe dejar hojas contadas para siempre.
+    if let Some(app) = app {
+        sumar_hojas(app, nombres_hojas.len());
+    }
 
     for nombre_hoja in nombres_hojas {
+        // El guard descuenta la hoja al terminar la iteración, incluidos los
+        // `continue` de hoja ilegible o columnas no reconocidas.
+        let _fin_de_hoja = app.map(|app| FinDeHoja { app });
+
         let range = match workbook.worksheet_range(&nombre_hoja) {
             Ok(r) => r,
             Err(_) => {
@@ -679,6 +796,8 @@ fn procesar_archivo_con_reglas(
         };
 
         let fila_inicial = reglas.filas_cabecera_ignoradas + columnas.fila_cabecera + 1;
+        let mut filas_validas = 0usize;
+        let mut mapa_hoja: HashMap<String, IngredienteConsolidado> = HashMap::new();
 
         for row in range.rows().skip(fila_inicial) {
             let nombre = row
@@ -718,26 +837,30 @@ fn procesar_archivo_con_reglas(
             // Cantidad de la columna detectada (total o la primera cantidad).
             let cantidad = cantidad_de_fila(row, &columnas.cantidad);
 
-            let clave_nombre = clave_ingrediente(&nombre);
-            let clave = format!("{}|{}", clave_nombre, um.to_lowercase());
-            let clave_fila = clave.clone();
-            let entry = mapa.entry(clave).or_insert_with(|| IngredienteConsolidado {
-                nombre: nombre_visible(&nombre),
-                unidad: um.clone(),
-                cantidad: 0.0,
-                clave: clave_fila,
-                clave_ingrediente: clave_nombre,
-                opciones_codigo: Vec::new(),
-                codigo_seleccionado: String::new(),
-            });
+            // Se acumula dos veces: en la hoja (para el cálculo por hoja) y en
+            // el total del archivo (para la tabla consolidada de siempre).
+            acumular_ingrediente(&mut mapa_hoja, &nombre, &um, cantidad);
+            acumular_ingrediente(&mut mapa, &nombre, &um, cantidad);
+            filas_validas += 1;
+        }
 
-            // Dejamos como nombre visible la variante con mejor puntuación
-            // ("Azúcar" por encima de "azucar" o "AZÚCAR")
-            if puntuacion_nombre(&nombre) > puntuacion_nombre(&entry.nombre) {
-                entry.nombre = nombre_visible(&nombre);
+        // Solo suma la hoja si aportó al menos una fila válida: una hoja con
+        // cabecera pero sin datos no alimenta la tabla.
+        if filas_validas > 0 {
+            hojas_procesadas += 1;
+
+            if !mapa_hoja.is_empty() {
+                let mut ingredientes_hoja: Vec<IngredienteConsolidado> =
+                    mapa_hoja.into_values().collect();
+                ingredientes_hoja
+                    .sort_by(|a, b| clave_ingrediente(&a.nombre).cmp(&clave_ingrediente(&b.nombre)));
+
+                detalle_hojas.push(ResultadoHojaProcesada {
+                    nombre: nombre_hoja,
+                    ingredientes: ingredientes_hoja,
+                    filas_validas,
+                });
             }
-
-            entry.cantidad += cantidad;
         }
     }
 
@@ -762,6 +885,8 @@ fn procesar_archivo_con_reglas(
     Ok(ResultadoProcesamientoHojas {
         ingredientes,
         advertencias,
+        hojas_procesadas,
+        detalle_hojas,
     })
 }
 
@@ -1483,7 +1608,7 @@ mod pruebas {
         let reglas = ReglasColumnas::desde_mapeo(&mapeo).expect("reglas válidas");
 
         let resultado =
-            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas)
+            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas, None)
                 .expect("debe leer el archivo");
 
         let _ = std::fs::remove_file(&ruta);
@@ -1494,6 +1619,11 @@ mod pruebas {
             resultado.advertencias
         );
         assert_eq!(resultado.ingredientes.len(), 2);
+        assert_eq!(resultado.hojas_procesadas, 1);
+        assert_eq!(resultado.detalle_hojas.len(), 1);
+        assert_eq!(resultado.detalle_hojas[0].nombre, "Sheet1");
+        assert_eq!(resultado.detalle_hojas[0].ingredientes.len(), 2);
+        assert_eq!(resultado.detalle_hojas[0].filas_validas, 2);
 
         let harina = resultado
             .ingredientes
@@ -1545,7 +1675,7 @@ mod pruebas {
 
         let reglas = ReglasColumnas::default();
         let resultado =
-            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas)
+            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas, None)
                 .expect("debe leer el archivo");
 
         let _ = std::fs::remove_file(&ruta);
@@ -1580,7 +1710,7 @@ mod pruebas {
 
         let reglas = ReglasColumnas::default();
         let error =
-            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas)
+            procesar_archivo_con_reglas(&ruta_texto, vec!["Sheet1".to_string()], &reglas, None)
                 .expect_err("no debe leer nada");
 
         let _ = std::fs::remove_file(&ruta);

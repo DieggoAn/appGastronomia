@@ -308,6 +308,32 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
 .btn-summary-action:hover { color: var(--accent); background: var(--accent-soft); }
 .btn-summary-action:hover .icon { color: currentColor; }
 
+/* Contador de hojas seleccionadas en el encabezado de "Archivos". Refleja la
+   selección que el usuario está construyendo, así que permanece visible
+   mientras haya casillas marcadas. El spinner solo aparece cuando Rust
+   confirma que hay hojas en lectura. */
+.hojas-procesando {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
+    white-space: nowrap;
+}
+.hojas-procesando[hidden] { display: none; }
+.hojas-procesando .processing-spinner {
+    width: 9px;
+    height: 9px;
+    border-width: 1.5px;
+}
+.hojas-procesando .processing-spinner[hidden] { display: none; }
+
 /* Acciones del panel de archivos */
 .sidebar-actions {
     display: flex;
@@ -480,6 +506,18 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
 @keyframes processingSpin {
     to { transform: rotate(360deg); }
 }
+
+/* "X hojas procesadas": hojas que realmente alimentan la tabla. Se mantiene
+   siempre visible (aunque valga 0) para no mover el resto de la barra. Queda
+   justo a la izquierda del botón de filtrar por color. */
+.hojas-procesadas {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-faint);
+    white-space: nowrap;
+}
+.hojas-procesadas.destacado { color: var(--accent); }
 
 /* Título editable de la tabla consolidada */
 .table-title-input {
@@ -696,6 +734,28 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
 .data-table td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text); }
 .data-table tbody tr:hover { background: var(--hover); }
 .data-table tbody tr:last-child td { border-bottom: none; }
+
+/* Selección múltiple de filas por arrastre: la clase vive en el <tr> y el
+   fondo se aplica a sus celdas para cubrir todo el ancho de la tabla sin
+   recorrer cada celda desde JS. El velo es translúcido para que el color
+   asignado a la fila siga viéndose al aplicar colores en bloque. */
+.data-table tbody tr.fila-seleccionada > td {
+    background-color: rgba(163, 31, 31, 0.10);
+    background-color: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.data-table tbody tr.fila-seleccionada > td:first-child {
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+
+body.arrastrando-filas,
+body.arrastrando-filas * {
+    -webkit-user-select: none !important;
+    user-select: none !important;
+}
+
+body.arrastrando-filas #tablaConsolidadaBody {
+    cursor: cell;
+}
 
 /* Cantidad editable: el input ocupa la celda como si fuera texto y solo
    muestra borde al pasar el mouse o al enfocar. */
@@ -1074,17 +1134,6 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
 .saved-list li:last-child { border-bottom: none; }
 .saved-list .saved-name { flex: 1; font-weight: 500; }
 
-/* Vista compacta de la lista de grupos (Ajustes → General). La clase vive en
-   el <ul>, así sobrevive a los repintados que hace la paginación. */
-.saved-list.modo-compacto li { padding: 3px 8px; }
-.saved-list.modo-compacto .saved-name {
-    display: block;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 /* Paginación de grupos: hermano del <ul> para no desaparecer al repintarlo. */
 .saved-pagination {
     display: flex;
@@ -1189,6 +1238,34 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     cursor: default;
 }
 
+/* Eliminar todos los grupos: acción destructiva del encabezado. */
+.btn-delete-all-groups {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid #b42318;
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: #b42318;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.btn-delete-all-groups:hover {
+    border-color: #912018;
+    background: #fef3f2;
+    color: #912018;
+}
+
+.btn-delete-all-groups .icon {
+    width: 13px;
+    height: 13px;
+}
+
 /* Añade esto en styles.css */
 .section-box-header {
     /* Asegúrate de que permita flexbox para alinear el input y el botón */
@@ -1265,6 +1342,10 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
 /* Contenedor del archivo */
 .excel-file-details {
     border-bottom: 1px solid var(--border);
+    /* Columna reservada a la izquierda para el multiplicador de cada hoja.
+       Vive solo en las filas hijas; la fila padre no la reserva. */
+    --sheet-multiplier-width: 24px;
+    --sheet-row-gap: 8px;
 }
 .excel-file-details summary {
     list-style: none; /* Quita la flechita por defecto */
@@ -1321,9 +1402,16 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     cursor: pointer;
 }
 
+/* El nombre del archivo ocupa el ancho libre de la fila (el contador de hojas
+   ya no existe) y empuja el chevron al borde derecho. */
+.excel-file-summary .file-name {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 /* Flecha indicadora del acordeón, alineada a la derecha */
 .excel-file-summary .chevron {
-    margin-left: auto;
+    margin-left: 6px;
     color: var(--text-faint);
     transition: transform 0.15s ease;
 }
@@ -1358,21 +1446,6 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-/* Los chips de grupo comparten la fila en lugar de saltar debajo, pero ceden
-   espacio al nombre del archivo y se recortan si no entran. */
-.file-list.modo-compacto .excel-file-tags {
-    flex: 0 1 auto;
-    flex-wrap: nowrap;
-    min-width: 0;
-    max-width: 55%;
-    margin-top: 0;
-    overflow: hidden;
-}
-.file-list.modo-compacto .excel-file-tags .file-group-tag {
-    flex: 0 1 auto;
-    min-width: 0;
 }
 
 /* Menú de contexto de los archivos */
@@ -1503,10 +1576,12 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     accent-color: var(--accent); /* Usa el color rojo de tu app */
 }
 
-/* Quitar el padding izquierdo extra a la lista de hojas, ya que el label lo maneja */
+/* Los hijos no se indentan como bloque: el escalonado nace de la columna del
+   multiplicador. El número empieza en la misma coordenada que el checkbox del
+   padre (10px de sangría), y el checkbox hijo queda a su derecha. */
 .sheets-list {
     list-style: none;
-    padding: 4px 0 4px 25px; 
+    padding: 4px 0;
     background: var(--bg);
 }
 
@@ -1526,7 +1601,11 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     cursor: pointer; /* Toda el área es clickeable */
 }
 .sheet-item-label .sheet-name {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .codes-cell {
@@ -1825,6 +1904,71 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     overflow: hidden;
 }
 
+/* Auto-vinculación por similitud (modal "Vincular Elementos a Grupos") */
+.link-autolink {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+}
+
+.link-autolink-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+}
+
+.link-autolink-input {
+    width: 62px;
+    padding: 4px 6px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.link-autolink-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.btn-auto-vincular {
+    padding: 5px 10px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: #fff;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+
+.btn-auto-vincular:hover:not(:disabled) {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+}
+
+.btn-auto-vincular:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.link-autolink-status {
+    margin-left: auto;
+    font-size: 10.5px;
+    color: var(--text-faint);
+}
+
 .colors-picker-column {
     display: flex;
     flex-direction: column;
@@ -1957,10 +2101,16 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     color: var(--text-faint);
 }
 
-/* --- Modal "Vincular Archivos a Grupos" --- */
+/* --- Modal "Vincular Elementos a Grupos" --- */
 /* Reutiliza colors-modal-* y colors-picker-*; solo se añade lo específico */
 .link-modal {
     width: min(860px, 100%);
+}
+
+/* La columna del selector necesita algo más de ancho para el árbol archivo →
+   hoja y la indentación de los hijos. El resto del modal no cambia. */
+.link-modal .colors-modal-body {
+    grid-template-columns: 290px 1fr;
 }
 
 .link-file-icon {
@@ -1980,6 +2130,195 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* --- Acordeón del selector: archivo padre → hojas hijas --- */
+.link-file-group {
+    display: block;
+    border-bottom: 1px solid var(--border);
+}
+.link-file-group:last-child { border-bottom: none; }
+.link-file-group[hidden] { display: none; }
+
+.link-file-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+.link-file-toggle:hover { background: var(--hover); }
+.link-file-toggle:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* Chevron: apunta a la derecha cerrado y gira al desplegar. */
+.link-file-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    transition: transform 0.15s ease;
+}
+.link-file-chevron .icon { width: 12px; height: 12px; }
+.link-file-toggle.expanded .link-file-chevron { transform: rotate(90deg); }
+.link-file-toggle .link-file-icon .icon { width: 14px; height: 14px; }
+.link-file-toggle .link-file-name { flex: 1; }
+
+/* Contador de hojas vinculadas del archivo (0/3, 2/3…). */
+.link-file-linked {
+    flex: 0 0 auto;
+    min-width: 38px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text-muted);
+    font-size: 10.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+.link-file-linked.has-links {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* El <ul> reutiliza .sheets-list del panel izquierdo; la indentación y la
+   guía vertical salen del botón hijo. */
+.link-file-sheets { padding: 2px 0 4px; }
+.link-file-sheets[hidden] { display: none; }
+.link-sheet-item {
+    padding: 0;
+    border-bottom: none;
+}
+.link-sheet-row {
+    position: relative;
+    padding: 6px 8px 6px 30px;
+}
+.link-sheet-row::before {
+    content: '';
+    position: absolute;
+    left: 16px;
+    top: 7px;
+    bottom: 7px;
+    width: 1px;
+    background: var(--border);
+}
+.link-sheet-row .sheet-name {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+}
+.link-sheet-row .colors-picker-count {
+    flex: 0 0 auto;
+    font-size: 10.5px;
+    color: var(--text-muted);
+}
+.link-sheet-row.active .sheet-name {
+    color: var(--accent);
+    font-weight: 600;
+}
+.link-sheet-row.active .colors-picker-count {
+    background: var(--panel);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.link-search-input {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.link-search-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.link-search-status {
+    font-size: 10.5px;
+    color: var(--text-faint);
+}
+.link-search-status:empty { display: none; }
+
+/* Elemento en foco en el centro del modal. Es contexto, no CTA: superficie
+   del panel, borde sutil y una franja de acento, con tipografía mayor que el
+   resto. El nombre se trunca en una línea para que el bloque de grupos no se
+   desplace si el archivo tiene un nombre largo. */
+.link-current-items {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+}
+.link-current-items[hidden] { display: none; }
+
+.link-current-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-md);
+}
+
+.link-current-item-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.link-current-item .link-file-icon .icon {
+    width: 18px;
+    height: 18px;
+}
+
+.link-current-item-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--text);
+}
+
+.link-current-item-parent {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
 }
 
 .link-group-row {
@@ -2048,6 +2387,63 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
 .link-modal-hint {
     font-size: 11px;
     color: var(--text-faint);
+}
+
+/* Pie: a la izquierda la pista/estado; a la derecha las acciones. */
+.link-modal-footer-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.link-modal-footer-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+/* Cerrar mantiene su estilo secundario pero sin estirarse dentro del pie. */
+.link-modal-footer-actions .btn-secondary {
+    flex: 0 0 auto;
+    padding: 7px 14px;
+}
+
+.link-modal-status {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--accent);
+}
+.link-modal-status:empty { display: none; }
+
+/* Acción destructiva: outline con el rojo del design system para no competir
+   con la acción principal (auto-vincular) ni con el cierre neutro. */
+.link-danger-btn {
+    padding: 7px 12px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+.link-danger-btn:hover:not(:disabled) {
+    border-color: var(--accent-strong);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+}
+.link-danger-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.link-danger-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
 }
 
 /* --- Modal "Ajustes de Procesamiento" --- */
@@ -2589,6 +2985,89 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
     font-size: 10.5px;
 }
 
+/* Sinónimos de columnas para "Mapeo de Grupos": lista vertical. */
+.settings-sinonimos-grupo {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.settings-sinonimos-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+}
+
+.settings-sinonimos-texto {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text);
+}
+
+.settings-sinonimos-editar {
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 10.5px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.settings-sinonimos-editar:hover {
+    color: var(--accent-strong);
+}
+
+.settings-sinonimos-eliminar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-faint);
+    font-family: inherit;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease;
+}
+
+.settings-sinonimos-eliminar:hover {
+    background: #fef3f2;
+    color: #b42318;
+}
+
+.settings-sinonimos-vacio {
+    padding: 4px 0;
+    color: var(--text-faint);
+    font-size: 11px;
+    font-style: italic;
+}
+
+.settings-list-add-plus {
+    padding: 5px 12px;
+    font-size: 15px;
+    line-height: 1;
+}
+
 /* Mensajes de estado/error dentro de la tabla consolidada */
 .tabla-mensaje {
     padding: 18px 12px;
@@ -2678,37 +3157,24 @@ body.modo-oscuro .btn-delete-selected:hover:not(:disabled) {
 }
 
 
-/* Chips de grupos bajo el nombre del archivo (columna izquierda principal) */
-.excel-file-summary {
-    flex-wrap: wrap;
-}
-.excel-file-tags {
-    display: flex;
-    flex: 1 0 100%;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 2px;
-}
-.excel-file-tags:empty { display: none; }
-
-.file-list .excel-file-tags .file-group-tag {
-    max-width: 100%;
-    padding: 1px 6px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--accent-soft);
+/* Multiplicador de secciones de cada hoja (acordeón del archivo). Es el primer
+   elemento de la fila y ocupa un gutter de ancho fijo, alineado a la izquierda:
+   así su borde izquierdo coincide con el checkbox del padre y el checkbox hijo
+   queda a una distancia fija (estable con 1, 2 o 3 dígitos). Es el único dato
+   de vinculación visible en esta lista; el "—" (sin grupo) queda atenuado. */
+.sheet-item-label .sheet-sections-count {
+    flex: 0 0 var(--sheet-multiplier-width);
+    width: var(--sheet-multiplier-width);
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
     color: var(--accent);
-    font-size: 9.5px;
-    font-weight: 600;
-    line-height: 1.5;
-    white-space: nowrap;
-    word-break: normal;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    user-select: none;
 }
-.file-list .excel-file-tags .file-group-tag.more {
-    background: var(--bg);
-    color: var(--text-muted);
+.sheet-item-label .sheet-sections-count.empty {
+    color: var(--text-faint);
+    font-weight: 500;
 }
 
 /* Pantallas medianas: se prioriza el icono y el layout sigue en una sola fila.
