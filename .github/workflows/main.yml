@@ -1,0 +1,39 @@
+name: 'publish'
+
+on:
+  push:
+    tags:
+      - 'v*' # Se ejecuta cuando subes un tag como v1.0.0
+  workflow_dispatch: # Esto te permite ejecutarlo manualmente con un botón (para probar)
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    runs-on: windows-latest # GitHub usará un Windows para compilar tu .exe
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: install frontend dependencies
+        run: npm install
+        
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Consolidador de Ingredientes v__VERSION__'
+          releaseBody: 'Primera versión estable.'
+          releaseDraft: true # Lo ponemos en true para que sea un borrador y puedas revisarlo
+          prerelease: false
+          includeUpdaterJson: true
