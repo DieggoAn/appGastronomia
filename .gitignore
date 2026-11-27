@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Artefactos de compilación de Rust/Tauri
+target/
+src-tauri/target/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,3 +26,18 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Temporales de pruebas y perfiles
+.select-test-profile/
+*.profile
+*.bak
+*.tmp
+*.orig
+*.rej
+
+# Artefactos de pruebas de navegador (perfiles, capturas y trazas)
+.playwright/
+test-results/
+playwright-report/
+*.har
+_select_test.html
