@@ -1,4 +1,6 @@
-const { invoke } = window.__TAURI__.core;
+import { invoke } from '@tauri-apps/api/core';
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 
 // Variable global para mantener las secciones actuales en JS
 let seccionesActuales = [];
@@ -8845,3 +8847,39 @@ function pintarTablaConsolidadaConTotal(datos) {
     aplicarColoresGuardados(tbody);
     asegurarColoresCargados(tbody, datos);
 }
+
+async function verificarActualizacion() {
+  try {
+    // Verifica si hay una versión nueva en GitHub
+    const update = await check();
+    
+    if (update) {
+      console.log(`Nueva versión disponible: ${update.version}. Descargando en segundo plano...`);
+      
+      // 1. Descarga silenciosa (no interrumpe al usuario)
+      await update.download();
+      console.log("Descarga completada. Esperando acción del usuario.");
+
+      // 2. Aviso al usuario
+      const usuarioAcepta = window.confirm(
+        `¡Nueva versión ${update.version} lista!\n\nSe ha descargado en segundo plano. ¿Deseas reiniciar la aplicación ahora para aplicarla?\n\n(Si eliges Cancelar, se aplicará la próxima vez que abras la app).`
+      );
+
+      if (usuarioAcepta) {
+        // 3. Instalar y reiniciar
+        await update.install();
+        await relaunch();
+      } else {
+        console.log("El usuario pospuso la actualización.");
+      }
+    } else {
+      console.log("La aplicación está actualizada.");
+    }
+  } catch (error) {
+    // Si falla (ej. no hay internet o no hay release aún), que no rompa la app
+    console.warn("No se pudo verificar la actualización:", error);
+  }
+}
+
+// Iniciar la verificación 5 segundos después de que abra la app
+setTimeout(verificarActualizacion, 5000);
