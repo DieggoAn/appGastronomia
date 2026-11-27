@@ -16,7 +16,8 @@
         "title": "Consolidador de Ingredientes",
         "width": 1280,
         "height": 720,
-        "maximized": true
+        "maximized": true,
+        "devtools": true
       }
     ],
     "security": {
