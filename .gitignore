@@ -41,3 +41,6 @@ test-results/
 playwright-report/
 *.har
 _select_test.html
+
+*.key
+*.key.pub
