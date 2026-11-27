@@ -1,6 +1,6 @@
 [package]
 name = "consolidador-de-ingredientes"
-version = "1.0.0"
+version = "1.0.1"
 description = "Consolidador de Ingredientes"
 authors = ["you"]
 edition = "2024"
