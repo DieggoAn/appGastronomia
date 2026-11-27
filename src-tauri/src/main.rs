@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    appgastronomia_lib::run()
+    consolidador_de_ingredientes_lib::run()
 }

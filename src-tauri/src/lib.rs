@@ -3,7 +3,7 @@
 // 1. Declaramos el nuevo módulo
 mod secciones;
 mod recientes;
-mod excel;
+pub mod excel;
 mod colores;
 mod vinculaciones;
 mod exportacion;

@@ -1,4 +1,4 @@
-use calamine::{open_workbook, Data, Reader, Xlsx};
+use calamine::{open_workbook, Data, Range, Reader, Xlsx};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -585,6 +585,8 @@ fn describir_faltantes(faltantes: &[&str], reglas: &ReglasColumnas) -> String {
 
 // --- 3. Comandos ---
 
+/// Devuelve todas las hojas del libro. El usuario decide cuáles procesar:
+/// el backend no filtra por nombre ni adivina qué pestañas son relevantes.
 #[tauri::command]
 pub fn obtener_hojas_excel(ruta: String) -> Result<Vec<String>, String> {
     let workbook: Xlsx<_> =
@@ -734,6 +736,84 @@ fn acumular_ingrediente(
     entry.cantidad += cantidad;
 }
 
+/// Procesa una hoja ya cargada en memoria: detecta su cabecera, recorre las
+/// filas de datos y acumula el consolidado aislado de la hoja (`mapa_hoja`) y
+/// el consolidado del archivo (`mapa_archivo`).
+///
+/// Está separada del comando para que el benchmark mida exactamente el mismo
+/// trabajo que hace la aplicación, sin duplicar la lógica de parseo.
+pub fn procesar_rango_hoja(
+    range: &Range<Data>,
+    reglas: &ReglasColumnas,
+    mapa_hoja: &mut HashMap<String, IngredienteConsolidado>,
+    mapa_archivo: &mut HashMap<String, IngredienteConsolidado>,
+) -> Result<usize, String> {
+    // Solo se miran las primeras filas: arriba suelen venir logos y
+    // títulos. `filas_cabecera_ignoradas` desplaza la ventana de búsqueda.
+    let filas_cabecera: Vec<Vec<String>> = range
+        .rows()
+        .skip(reglas.filas_cabecera_ignoradas)
+        .take(reglas.filas_escaneo_cabecera)
+        .map(|row| {
+            row.iter()
+                .map(|c| c.to_string().trim().to_lowercase())
+                .collect()
+        })
+        .collect();
+
+    let columnas = detectar_columnas(&filas_cabecera, reglas)?;
+
+    let fila_inicial = reglas.filas_cabecera_ignoradas + columnas.fila_cabecera + 1;
+    let mut filas_validas = 0usize;
+
+    for row in range.rows().skip(fila_inicial) {
+        let nombre = row
+            .get(columnas.nombre)
+            .map(|c| c.to_string().trim().to_string())
+            .unwrap_or_default();
+        let mut um = row
+            .get(columnas.unidad)
+            .map(|c| c.to_string().trim().to_string())
+            .unwrap_or_default();
+
+        // Unidad fija para celdas que vienen vacías: ya no se configura
+        // desde el modal, pero se conserva el comportamiento histórico.
+        if um.is_empty() {
+            um = UNIDAD_POR_DEFECTO.to_string();
+        }
+
+        if nombre.is_empty() || um.is_empty() {
+            continue;
+        }
+
+        // Unificación de unidades: "LT", "lts" y "litro" pasan a la misma
+        // forma estándar antes de consolidar por nombre + unidad.
+        let um = reglas.unidad_normalizada(&um);
+
+        // Cabeceras repetidas u otras filas que el usuario marcó como no
+        // dato ("material", "descripción"…).
+        let nombre_normalizado = clave_ingrediente(&nombre);
+        if reglas
+            .palabras_fila_ignorada
+            .iter()
+            .any(|palabra| nombre_normalizado.contains(palabra.as_str()))
+        {
+            continue;
+        }
+
+        // Cantidad de la columna detectada (total o la primera cantidad).
+        let cantidad = cantidad_de_fila(row, &columnas.cantidad);
+
+        // Se acumula dos veces: en la hoja (para el cálculo por hoja) y en
+        // el total del archivo (para la tabla consolidada de siempre).
+        acumular_ingrediente(mapa_hoja, &nombre, &um, cantidad);
+        acumular_ingrediente(mapa_archivo, &nombre, &um, cantidad);
+        filas_validas += 1;
+    }
+
+    Ok(filas_validas)
+}
+
 /// Núcleo de lectura separado del comando: así se puede probar con un `.xlsx`
 /// real sin necesitar un `AppHandle` de Tauri.
 fn procesar_archivo_con_reglas(
@@ -774,75 +854,16 @@ fn procesar_archivo_con_reglas(
             }
         };
 
-        // Solo se miran las primeras filas: arriba suelen venir logos y
-        // títulos. `filas_cabecera_ignoradas` desplaza la ventana de búsqueda.
-        let filas_cabecera: Vec<Vec<String>> = range
-            .rows()
-            .skip(reglas.filas_cabecera_ignoradas)
-            .take(reglas.filas_escaneo_cabecera)
-            .map(|row| {
-                row.iter()
-                    .map(|c| c.to_string().trim().to_lowercase())
-                    .collect()
-            })
-            .collect();
-
-        let columnas = match detectar_columnas(&filas_cabecera, &reglas) {
-            Ok(columnas) => columnas,
+        // Se lee el contenido de la hoja y se procesa con las reglas
+        // configuradas. La selección de hojas la decide el usuario.
+        let mut mapa_hoja: HashMap<String, IngredienteConsolidado> = HashMap::new();
+        let filas_validas = match procesar_rango_hoja(&range, reglas, &mut mapa_hoja, &mut mapa) {
+            Ok(filas) => filas,
             Err(motivo) => {
                 advertencias.push(format!("Hoja «{nombre_hoja}»: {motivo}"));
                 continue;
             }
         };
-
-        let fila_inicial = reglas.filas_cabecera_ignoradas + columnas.fila_cabecera + 1;
-        let mut filas_validas = 0usize;
-        let mut mapa_hoja: HashMap<String, IngredienteConsolidado> = HashMap::new();
-
-        for row in range.rows().skip(fila_inicial) {
-            let nombre = row
-                .get(columnas.nombre)
-                .map(|c| c.to_string().trim().to_string())
-                .unwrap_or_default();
-            let mut um = row
-                .get(columnas.unidad)
-                .map(|c| c.to_string().trim().to_string())
-                .unwrap_or_default();
-
-            // Unidad fija para celdas que vienen vacías: ya no se configura
-            // desde el modal, pero se conserva el comportamiento histórico.
-            if um.is_empty() {
-                um = UNIDAD_POR_DEFECTO.to_string();
-            }
-
-            if nombre.is_empty() || um.is_empty() {
-                continue;
-            }
-
-            // Unificación de unidades: "LT", "lts" y "litro" pasan a la misma
-            // forma estándar antes de consolidar por nombre + unidad.
-            let um = reglas.unidad_normalizada(&um);
-
-            // Cabeceras repetidas u otras filas que el usuario marcó como no
-            // dato ("material", "descripción"…).
-            let nombre_normalizado = clave_ingrediente(&nombre);
-            if reglas
-                .palabras_fila_ignorada
-                .iter()
-                .any(|palabra| nombre_normalizado.contains(palabra.as_str()))
-            {
-                continue;
-            }
-
-            // Cantidad de la columna detectada (total o la primera cantidad).
-            let cantidad = cantidad_de_fila(row, &columnas.cantidad);
-
-            // Se acumula dos veces: en la hoja (para el cálculo por hoja) y en
-            // el total del archivo (para la tabla consolidada de siempre).
-            acumular_ingrediente(&mut mapa_hoja, &nombre, &um, cantidad);
-            acumular_ingrediente(&mut mapa, &nombre, &um, cantidad);
-            filas_validas += 1;
-        }
 
         // Solo suma la hoja si aportó al menos una fila válida: una hoja con
         // cabecera pero sin datos no alimenta la tabla.
@@ -1576,7 +1597,6 @@ mod pruebas {
         {
             let mut libro = Workbook::new();
             let hoja = libro.add_worksheet();
-
             // Fila 0: ruido, se ignora con `filas_cabecera_ignoradas = 1`.
             hoja.write_string(0, 0, "Reporte de bodega").unwrap();
             // Fila 1: cabecera con sinónimos personalizados.
